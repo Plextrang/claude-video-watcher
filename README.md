@@ -26,21 +26,36 @@ Useful flags: `--hook-only` (first 60s), `--start` / `--end` (a segment), `--slu
 Resumable — existing frames, sheets and data are reused, so re-running is cheap. A completed video
 re-runs in well under a second with no network.
 
-## Where output lands
+## Where output lands — outside this repo
+
+**This repo ships the tool and nothing else. It never contains analysis output.** Every analysis
+lands in a sibling folder, outside version control:
 
 ```
-research\
-  INDEX.md                  one row per video, sorted by views ÷ subs
-  <video-slug>\
-    NOTES.md                the deliverable
-    frames\                 one JPEG per shot + fill frames (gitignored)
-    sheets\                 3x3 contact sheets, 1568px, timestamps burned in (gitignored)
-    data\                   transcript, meta, pacing, cuts, audio, thumbnail
+Youtube Skool\
+├── claude-video-watcher\      ← this repo: tool only
+│   ├── .claude\skills\watch-video\
+│   ├── INDEX.template.md      headers-only scaffold
+│   └── README.md
+└── video-research\            ← all analysis, no git, never shipped
+    ├── INDEX.md               one row per video, sorted by views ÷ subs
+    └── <video-slug>\
+        ├── NOTES.md           the deliverable
+        ├── frames\            one JPEG per shot + fill frames
+        ├── sheets\            3x3 contact sheets, 1568px, timestamps burned in
+        └── data\              transcript, meta, pacing, cuts, audio, thumbnail
 ```
+
+The separation is physical, not a `.gitignore` promise — that is the point. The default output root
+is resolved from the script's own location, so it is correct regardless of the working directory,
+and the script **refuses a `--root` that resolves inside the repo** rather than writing 30 MB
+somewhere it would get committed.
+
+**A fresh clone creates `video-research\` on first run** and seeds `INDEX.md` from
+`INDEX.template.md`. Nothing to set up by hand.
 
 The source video is deleted automatically once frames and audio both succeed. Frames, sheets, CSVs
-and `NOTES.md` are what gets kept; the source is disposable and re-downloadable. `source.*`,
-`frames\` and `sheets\` are gitignored — `data\` and `NOTES.md` are tracked.
+and `NOTES.md` are what gets kept; the source is disposable and re-downloadable.
 
 ## Requirements
 

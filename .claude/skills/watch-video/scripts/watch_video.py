@@ -33,14 +33,26 @@ FONT = r"C\:/Windows/Fonts/arialbd.ttf"
 TAG = re.compile(r'<[^>]*>')
 PTS = re.compile(r'pts_time:([0-9.]+)')
 
+# The repo ships the tool only. Every analysis lands in a sibling folder outside
+# it, so no analysis output can ever end up inside version control.
+#   .../<parent>/<repo>/.claude/skills/watch-video/scripts/watch_video.py
+#   parents[4] == <repo>, so the sibling is parents[4].parent / 'video-research'
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_ROOT = REPO_ROOT.parent / 'video-research'
+
 
 def mmss(s):
     return f"{int(s) // 60:02d}:{int(s) % 60:02d}"
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, check=True, capture_output=True, text=True,
-                          errors='ignore', **kw)
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True,
+                              errors='ignore', **kw)
+    except subprocess.CalledProcessError as e:
+        # Show the tool's real error, not a Python traceback.
+        tail = [l for l in (e.stderr or e.stdout or '').strip().split('\n') if l.strip()]
+        sys.exit('FATAL: yt-dlp failed.\n' + '\n'.join(tail[-6:] or ['(no output)']))
 
 
 def ytdlp(args):
@@ -570,7 +582,8 @@ def main():
     ap = argparse.ArgumentParser(description='Video -> frames, sheets, transcript, pacing, audio.')
     ap.add_argument('url', nargs='?', help='YouTube URL')
     ap.add_argument('--slug', help='folder name (default: derived from title)')
-    ap.add_argument('--root', default='research', help='output root (default: ./research)')
+    ap.add_argument('--root', default=None,
+                    help=f'output root (default: {DEFAULT_ROOT}, a sibling of the repo)')
     ap.add_argument('--start', type=float, help='analyse from this second')
     ap.add_argument('--end', type=float, help='analyse until this second')
     ap.add_argument('--hook-only', action='store_true', help='first 60s only, dense')
@@ -583,8 +596,30 @@ def main():
     if a.hook_only:
         start, end = 0.0, 60.0
 
-    root = Path(a.root).resolve()
+    root = (Path(a.root).resolve() if a.root else DEFAULT_ROOT)
+    # Analysis output must never land inside the repo. Catch a bad --root early,
+    # before a download writes 30 MB somewhere it will get committed.
+    try:
+        inside_repo = root == REPO_ROOT or REPO_ROOT in root.parents
+    except Exception:
+        inside_repo = False
+    if inside_repo:
+        sys.exit(f'FATAL: --root {root} is inside the repo ({REPO_ROOT}).\n'
+                 f'Analysis output belongs outside version control. '
+                 f'Default is {DEFAULT_ROOT}.')
+    created = not root.exists()
     root.mkdir(parents=True, exist_ok=True)
+    if created:
+        log(f'created output root {root}')
+
+    # A fresh clone has no live index. Seed it from the repo's template.
+    index = root / 'INDEX.md'
+    tmpl = REPO_ROOT / 'INDEX.template.md'
+    if not index.exists() and tmpl.exists():
+        txt = re.sub(r'\nScaffold only\..*?\n\n', '\n',
+                     tmpl.read_text(encoding='utf-8'), flags=re.S)
+        index.write_text(txt, encoding='utf-8')
+        log(f'seeded {index} from INDEX.template.md')
 
     slug = a.slug
     if not slug:

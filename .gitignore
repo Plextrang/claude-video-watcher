@@ -1,9 +1,3 @@
-# Analysis output — regenerable from the source URL, never committed
-research/**/source.*
-research/**/frames/
-research/**/sheets/
-research/**/data/
-
 # Python
 __pycache__/
 *.pyc

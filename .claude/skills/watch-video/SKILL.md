@@ -20,18 +20,22 @@ The only permitted `pip install` is a yt-dlp upgrade. Anything else, ask first.
 
 From the project the analysis belongs to, so output lands in that project's `research\`:
 
-This skill is project-local. Run it from the project root, so output lands in this project's
-`research\` and the path stays valid if the project moves:
+This skill is project-local. Run it from the repo root:
 
 ```
 py ".claude\skills\watch-video\scripts\watch_video.py" "<URL>"
 ```
 
-Produces `research\<slug>\` containing `frames\`, `sheets\`, `data\`, and later `NOTES.md`.
+**Output never lands in the repo.** The default root is `..\video-research\`, a sibling of the repo,
+resolved from the script's own location so it is correct regardless of the working directory. The
+repo ships the tool; every analysis lives outside version control. The script refuses a `--root`
+that resolves inside the repo, and creates the sibling folder on first run.
+
+Produces `..\video-research\<slug>\` containing `frames\`, `sheets\`, `data\`, and later `NOTES.md`.
 
 Flags:
 - `--slug NAME` — folder name (default: derived from title)
-- `--root PATH` — output root (default: `./research`)
+- `--root PATH` — output root (default: the `video-research` sibling; must be outside the repo)
 - `--start SEC` / `--end SEC` — analyse a segment only
 - `--hook-only` — first 60 seconds only
 - `--threshold N` — override scene threshold
@@ -194,7 +198,9 @@ Sections 2, 3, 3b, 7, 9 and 10 are the ones Eddie actually uses. Weight the effo
 
 ## After every run — update the index
 
-Append one row to `research\INDEX.md`. Never rewrite existing rows.
+Append one row to the live index at `..\video-research\INDEX.md` — outside the repo. Never rewrite
+existing rows. The repo's `INDEX.template.md` is a headers-only scaffold; the script seeds the live
+index from it on first run. Do not append rows to the template.
 
 | Column | Source |
 |---|---|
