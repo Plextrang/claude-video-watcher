@@ -10,6 +10,8 @@ so spaces in paths never touch a shell.
 import argparse
 import csv
 import json
+import os
+import platform
 import re
 import shutil
 import statistics as st
@@ -29,7 +31,10 @@ DEAD_SSIM = 0.97           # fills this similar => genuinely static
 COLS, ROWS = 3, 3
 CW, CH = 522, 294          # 3x3 -> 1566x882, long edge under 1568
 PER = COLS * ROWS
-FONT = r"C\:/Windows/Fonts/arialbd.ttf"
+# Resolved per platform in main() before anything downloads. Contact sheets
+# are the whole point of the tool and drawtext needs a real font file, so a
+# missing font must fail at startup rather than after a 300 MB download.
+FONT = None
 TAG = re.compile(r'<[^>]*>')
 PTS = re.compile(r'pts_time:([0-9.]+)')
 YT_ID = re.compile(r'(?:v=|/shorts/|youtu\.be/|/embed/|/live/|/v/)'
@@ -573,6 +578,54 @@ def step_frames(d, src, rows):
     return made + skipped == len(rows)
 
 
+# ---------------------------------------------------------------- font -------
+def font_candidates():
+    """Bold sans, per platform, most-likely-present first. Windows comes from
+    %WINDIR% rather than a hardcoded C: so a non-C: install still works."""
+    system = platform.system()
+    win = Path(os.environ.get('WINDIR') or 'C:/Windows') / 'Fonts'
+    windows = [str(win / n) for n in
+               ('arialbd.ttf', 'segoeuib.ttf', 'calibrib.ttf', 'arial.ttf')]
+    # Real single-face .ttf first; Helvetica.ttc is a collection and drawtext
+    # handles collections less predictably, so it is the last resort.
+    mac = ['/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+           '/Library/Fonts/Arial Bold.ttf',
+           '/System/Library/Fonts/Supplemental/Verdana Bold.ttf',
+           '/System/Library/Fonts/Supplemental/Tahoma Bold.ttf',
+           '/System/Library/Fonts/Helvetica.ttc']
+    # Best-effort only. Linux is not a supported platform for this tool.
+    linux = ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+             '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+             '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf']
+    return {'Windows': windows + mac + linux,
+            'Darwin': mac + linux + windows}.get(system, linux + mac + windows)
+
+
+def ff_font_arg(path):
+    """drawtext's fontfile= sits inside a filtergraph, where ':' separates
+    options - hence the escaped drive-letter colon. Forward slashes and the
+    surrounding single quotes in step_sheets cover backslashes and spaces."""
+    return str(path).replace('\\', '/').replace(':', r'\:')
+
+
+def resolve_font(explicit=None):
+    """Returns (ffmpeg-ready path, list of paths tried). None if none exist.
+
+    An explicit --font that does not exist is an error, never a reason to
+    fall back to a platform default: silently ignoring the flag would hide
+    a typo behind a sheet that renders in the wrong typeface."""
+    if explicit:
+        if Path(explicit).is_file():
+            return ff_font_arg(explicit), [explicit]
+        return None, [explicit]
+    tried = []
+    for cand in font_candidates():
+        tried.append(cand)
+        if Path(cand).is_file():
+            return ff_font_arg(cand), tried
+    return None, tried
+
+
 # --------------------------------------------------------------- sheets ------
 def esc(s):
     return s.replace(':', r'\:')
@@ -802,7 +855,23 @@ def main():
                          'return 0 bytes (SABR streaming).')
     ap.add_argument('--update', action='store_true',
                     help='upgrade yt-dlp before running (the only permitted install)')
+    ap.add_argument('--font', metavar='PATH',
+                    help='bold TTF for contact sheet labels '
+                         '(default: auto-detected per platform)')
     a = ap.parse_args()
+
+    # Before any network or disk work. Contact sheets are the deliverable and
+    # drawtext needs a real font file, so this cannot be discovered late.
+    global FONT
+    FONT, tried = resolve_font(a.font)
+    if not FONT:
+        sys.exit('FATAL: no usable font for the contact sheet labels.\n'
+                 'Tried:\n  ' + '\n  '.join(tried)
+                 + '\nPass one with --font "path/to/a/bold.ttf".')
+    if "'" in FONT:
+        sys.exit(f"FATAL: the font path contains an apostrophe, which ffmpeg's "
+                 f"filtergraph parser cannot carry: {FONT}\n"
+                 f'Copy the font somewhere without one and pass --font.')
 
     # Mutate in place: ytdlp() reads these module-level lists on every call.
     if a.cookies_from_browser:
