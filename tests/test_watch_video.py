@@ -435,6 +435,22 @@ class TestIndex(TempDirCase):
         self.assertEqual(got['old-slug']['takeaway'], 'a hand written takeaway')
         self.assertEqual(got['old-slug']['analyzed'], '2026-08-13')
 
+    def test_record_carries_the_depth_it_was_run_at(self):
+        """Depth changes frame composition but no reported measurement, so
+        without recording it the frame counts look comparable across
+        analyses when they are not."""
+        rec = wv.build_record('s', {}, {'depth': 'deep', 'total_frames': 200,
+                                        'fill_frames': 40, 'sub_frames': 30},
+                              {}, None, '2026-08-26')
+        self.assertEqual(rec['depth'], 'deep')
+        self.assertEqual(rec['sub_frames'], 30)
+        self.assertIn('depth', dict(wv.PATTERN_COLS))
+
+    def test_record_defaults_depth_for_analyses_that_predate_it(self):
+        rec = wv.build_record('s', {}, {'total_frames': 100}, {}, None, '2026-08-26')
+        self.assertEqual(rec['depth'], wv.DEFAULT_DEPTH)
+        self.assertEqual(rec['sub_frames'], 0)
+
     def test_human_numbers(self):
         self.assertEqual(wv._human(195000), '195K')
         self.assertEqual(wv._human(5110), '5.1K')

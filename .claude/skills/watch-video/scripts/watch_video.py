@@ -1271,8 +1271,13 @@ def build_record(slug, meta, pacing, audio, baseline, analyzed):
         'beat_verdict': (audio or {}).get('beat_verdict'),
         'words': meta.get('words'),
         'wpm': meta.get('wpm'),
+        # Depth changes frame composition but not a single reported
+        # measurement, so without it the frame counts below look comparable
+        # across analyses when they are not.
+        'depth': pacing.get('depth', DEFAULT_DEPTH),
         'total_frames': pacing.get('total_frames'),
         'fill_frames': pacing.get('fill_frames'),
+        'sub_frames': pacing.get('sub_frames', 0),
         'takeaway': PENDING,
     }
 
@@ -1474,8 +1479,8 @@ PATTERN_COLS = [
     ('longest_shot_sec', 'longest'), ('low_cut_count', 'lowcut_n'),
     ('low_cut_total_sec', 'lowcut_s'), ('dead_zone_count', 'dead'),
     ('riser_count', 'risers'), ('beat_alignment_ratio', 'beat'),
-    ('wpm', 'wpm'), ('words', 'words'), ('total_frames', 'frames'),
-    ('fill_frames', 'fill'),
+    ('wpm', 'wpm'), ('words', 'words'), ('depth', 'depth'),
+    ('total_frames', 'frames'), ('fill_frames', 'fill'), ('sub_frames', 'sub'),
 ]
 
 
