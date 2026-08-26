@@ -279,11 +279,85 @@ def ssim_pair(a, b):
     return None
 
 
-def step_cuts(d, src, meta, threshold_override, start, end):
+def probe_duration(src):
+    p = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+                        'format=duration', '-of', 'default=nk=1:nw=1', str(src)],
+                       capture_output=True, text=True, errors='ignore')
+    try:
+        return float((p.stdout or '').strip())
+    except ValueError:
+        return 0.0
+
+
+def resolve_window(meta, start, end, src=None):
+    """Metadata duration is absent or zero for livestreams and some
+    extractors, and falling through with duration 0 raised ZeroDivisionError
+    on merged-shots-per-minute. --end past the real duration was equally bad:
+    it generated fill timestamps past EOF that extracted nothing and stranded
+    the run with frames_ok false and the source kept forever."""
     duration = float(meta.get('duration') or 0)
-    win_start = start or 0.0
-    win_end = end if end else duration
+    if duration <= 0 and src:
+        duration = probe_duration(src)
+    win_start = max(0.0, float(start or 0.0))
+    win_end = float(end) if end else duration
+    if duration > 0:
+        win_end = min(win_end, duration)
+    return win_start, win_end, duration
+
+
+def invalidate_if_params_changed(d, win_start, win_end, threshold_override):
+    """cuts.csv used to be reused whenever it existed, with no check that the
+    window or threshold matched the run that produced it. So --hook-only after
+    a full run silently reported full-run pacing, and a full run after
+    --hook-only reported 60 seconds as the whole video. Both flags are
+    documented in the README, so both were reachable in a demo.
+
+    Runs before step_download so a discarded cache re-downloads its source."""
+    cuts_csv = d / 'data' / 'cuts.csv'
+    pacing_file = d / 'data' / 'pacing.json'
+    if not cuts_csv.exists():
+        return
+
+    reasons = []
+    if not pacing_file.exists():
+        reasons.append('pacing.json is missing')
+    else:
+        try:
+            prev = json.loads(pacing_file.read_text(encoding='utf-8'))
+        except (ValueError, OSError):
+            prev, reasons = {}, ['pacing.json is unreadable']
+        prev_win = prev.get('window')
+        if (not prev_win or [round(float(x), 3) for x in prev_win]
+                != [round(win_start, 3), round(win_end, 3)]):
+            reasons.append(f'window {prev_win} -> '
+                           f'[{round(win_start, 3)}, {round(win_end, 3)}]')
+        if (threshold_override is not None
+                and prev.get('threshold_used') != threshold_override):
+            reasons.append(f'threshold {prev.get("threshold_used")} -> '
+                           f'{threshold_override}')
+    if not reasons:
+        return
+
+    log('   ! cached run does not match this one: ' + '; '.join(reasons))
+    log('   ! discarding cached frames, sheets, pacing and audio - re-detecting')
+    for p in list((d / 'frames').glob('*.jpg')) + list((d / 'sheets').glob('*.jpg')):
+        p.unlink(missing_ok=True)
+    for name in ('cuts.csv', 'pacing.json', 'sheet_index.csv',
+                 'low_cut_sections.csv', 'audio_energy.csv',
+                 'audio_cuts_aligned.csv', 'audio_summary.json',
+                 'loudness_m.txt'):
+        (d / 'data' / name).unlink(missing_ok=True)
+
+
+def step_cuts(d, src, meta, threshold_override, start, end):
+    win_start, win_end, duration = resolve_window(meta, start, end, src)
     win_dur = win_end - win_start
+    if win_dur <= 0:
+        sys.exit(f'FATAL: nothing to analyse - the window resolves to '
+                 f'{win_start:.1f}s..{win_end:.1f}s '
+                 f'(duration {duration:.1f}s).\n'
+                 f'Check --start / --end, or the source if this is a '
+                 f'livestream with no reported duration.')
 
     cuts_csv = d / 'data' / 'cuts.csv'
     if cuts_csv.exists():
@@ -758,15 +832,28 @@ def main():
     log(f'== {slug}\n== {d}')
 
     meta = step_transcript(d, a.url)
+
+    # Before the download, so a discarded cache re-fetches what it needs.
+    prov_start, prov_end, prov_dur = resolve_window(meta, start, end)
+    if prov_dur > 0:
+        invalidate_if_params_changed(d, prov_start, prov_end, a.threshold)
+    else:
+        log('   ! metadata reports no duration - skipping the cache '
+            'parameter check; the window resolves after download')
+
     src = step_download(d, a.url, a.no_download)
     if a.hook_only:
         log('   --hook-only: analysing 0:00-1:00')
 
-    pacing, rows = step_cuts(d, src, meta, a.threshold, start, end)
+    # Authoritative window: src is available now, so a missing metadata
+    # duration can fall back to ffprobe and --end can be clamped to it.
+    win_start, win_end, _ = resolve_window(meta, start, end, src)
+
+    pacing, rows = step_cuts(d, src, meta, a.threshold, win_start, win_end)
     frames_ok = step_frames(d, src, rows)
     classify_low_cut(d, pacing, rows)
     step_sheets(d, rows)
-    audio_ok = step_audio(d, src, rows, start, end)
+    audio_ok = step_audio(d, src, rows, win_start, win_end)
 
     if src and src.exists():
         if frames_ok and audio_ok and not a.keep_source:
