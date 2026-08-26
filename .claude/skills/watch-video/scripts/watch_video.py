@@ -32,6 +32,8 @@ PER = COLS * ROWS
 FONT = r"C\:/Windows/Fonts/arialbd.ttf"
 TAG = re.compile(r'<[^>]*>')
 PTS = re.compile(r'pts_time:([0-9.]+)')
+YT_ID = re.compile(r'(?:v=|/shorts/|youtu\.be/|/embed/|/live/|/v/)'
+                   r'([A-Za-z0-9_-]{11})')
 
 # Populated once in main(), then read by ytdlp(). Mutated in place, never
 # rebound, so the module-level name ytdlp() closes over stays correct.
@@ -105,6 +107,14 @@ def log(msg):
     print(msg, flush=True)
 
 
+def url_video_id(url):
+    """The 11-char YouTube id, parsed locally - no network call."""
+    if not url:
+        return None
+    m = YT_ID.search(url)
+    return m.group(1) if m else None
+
+
 # ------------------------------------------------------------- transcript ----
 def ts_to_sec(t):
     h, m, s = t.split(':')
@@ -145,6 +155,10 @@ def step_transcript(d, url, vid_hint=None):
     subs = sorted(d.glob('*.en*.vtt'))
     info = next(iter(d.glob('*.info.json')), None)
     if not subs or not info:
+        if not url:
+            sys.exit('FATAL: --slug was given with no URL, but this folder '
+                     'has no cached transcript or metadata to reuse:\n  '
+                     f'{d}\nPass the URL as well.')
         log('[1/6] transcript + metadata')
         run(ytdlp(['--skip-download', '--write-auto-subs', '--write-subs',
                    '--sub-langs', 'en.*', '--sub-format', 'vtt',
@@ -167,6 +181,20 @@ def step_transcript(d, url, vid_hint=None):
         '\n'.join(f'[{mmss(s)}] {t}' for s, t in cues), encoding='utf-8')
 
     j = json.loads(info.read_text(encoding='utf-8'))
+
+    # slugify() keeps the first seven title words, so two different videos
+    # with similar titles land in one folder and silently reuse each other's
+    # frames, cuts and audio. The live corpus already has near-misses. Refuse
+    # rather than merge; the operator picks a slug.
+    want = url_video_id(url)
+    if want and j.get('id') and j['id'] != want:
+        sys.exit(f'FATAL: slug collision. This folder already holds a '
+                 f'different video.\n'
+                 f'  folder    : {d}\n'
+                 f'  cached    : {j.get("id")}  {j.get("title")}\n'
+                 f'  requested : {want}\n'
+                 f'Re-run with an explicit --slug for the new video.')
+
     meta = {k: j.get(k) for k in
             ('id', 'title', 'channel', 'channel_follower_count', 'duration',
              'view_count', 'like_count', 'comment_count', 'upload_date',
