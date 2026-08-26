@@ -977,6 +977,26 @@ def step_audio(d, src, rows, start, end):
 
 
 # ----------------------------------------------------------------- main ------
+def existing_slug_for(root, vid):
+    """Find a folder already holding this video id.
+
+    Creators retitle videos. slugify() derives the folder name from the
+    CURRENT title, so a retitled video resolved to a brand-new slug, silently
+    re-downloaded, and re-analysed from scratch into a second folder - while
+    the README promises a completed video re-runs in under a second. Caught
+    by re-running a real analysis: the title had drifted and it took a minute
+    and 35 MB instead of being a no-op."""
+    if not vid or not root.exists():
+        return None
+    for meta in sorted(root.glob('*/data/meta.json')):
+        try:
+            if json.loads(meta.read_text(encoding='utf-8')).get('id') == vid:
+                return meta.parent.parent.name
+        except (ValueError, OSError):
+            continue
+    return None
+
+
 def parse_time(value):
     """SS, MM:SS or HH:MM:SS, with optional decimals. Raw seconds only meant
     reaching for a calculator to name a moment you are looking at."""
@@ -1118,9 +1138,15 @@ def main():
     if not slug:
         if not a.url:
             sys.exit('FATAL: need --slug when no URL is given.')
-        t = run(ytdlp(['--skip-download', '--print', '%(title)s',
-                       '--', a.url])).stdout.strip()
-        slug = slugify(t.split('\n')[-1])
+        # Match on video id before falling back to the title, so a retitled
+        # video re-runs into its existing folder. Also skips a network call.
+        slug = existing_slug_for(root, url_video_id(a.url))
+        if slug:
+            log(f'matched an existing analysis by video id: {slug}')
+        else:
+            t = run(ytdlp(['--skip-download', '--print', '%(title)s',
+                           '--', a.url])).stdout.strip()
+            slug = slugify(t.split('\n')[-1])
     d = root / slug
     for sub in ('frames', 'sheets', 'data'):
         (d / sub).mkdir(parents=True, exist_ok=True)
