@@ -88,6 +88,19 @@ def ytdlp(args):
             + COOKIES + EXTRACTOR_ARGS + args)
 
 
+def ff(cmd, what, **kw):
+    """Run ffmpeg and surface its real error instead of a Python traceback.
+    SKILL.md promises the actual error before any proposed fix; bare
+    check=True broke that promise everywhere it was used."""
+    p = subprocess.run(cmd, capture_output=True, text=True,
+                       errors='ignore', **kw)
+    if p.returncode != 0:
+        tail = [l for l in (p.stderr or '').strip().split('\n') if l.strip()]
+        sys.exit(f'FATAL: ffmpeg failed during {what}.\n'
+                 + '\n'.join(tail[-6:] or ['(no output)']))
+    return p
+
+
 def log(msg):
     print(msg, flush=True)
 
@@ -230,7 +243,11 @@ def detect(src, threshold, start, dur):
         cmd += ['-t', f'{dur:.3f}']
     cmd += ['-i', str(src), '-filter:v',
             f"select='gt(scene,{threshold})',showinfo", '-f', 'null', '-']
-    p = subprocess.run(cmd, capture_output=True, text=True, errors='ignore')
+    # Must not swallow a failure. A corrupt or half-downloaded source makes
+    # ffmpeg exit non-zero and findall return nothing, which used to sail
+    # through and report ZERO CUTS as a real measurement. Silently wrong data
+    # is worse than a crash for a tool whose whole pitch is honest numbers.
+    p = ff(cmd, f'cut detection at threshold {threshold}')
     return sorted({round(float(m) + start, 3) for m in PTS.findall(p.stderr)})
 
 
@@ -248,11 +265,18 @@ def merge_shots(times, window=MERGE_WINDOW):
 
 
 def ssim_pair(a, b):
+    """Dead-zone enrichment only, so a failure degrades rather than exits -
+    but it must say so. A silently missing score used to read as 'no score'
+    and quietly downgrade a dead-zone verdict."""
     p = subprocess.run(['ffmpeg', '-hide_banner', '-i', str(a), '-i', str(b),
                         '-lavfi', 'ssim', '-f', 'null', '-'],
                        capture_output=True, text=True, errors='ignore')
     m = re.search(r'All:([0-9.]+)', p.stderr)
-    return float(m.group(1)) if m else None
+    if m:
+        return float(m.group(1))
+    log(f'   ! ssim failed on {a.name} vs {b.name} '
+        f'(exit {p.returncode}) - section scored without it')
+    return None
 
 
 def step_cuts(d, src, meta, threshold_override, start, end):
@@ -438,9 +462,10 @@ def step_frames(d, src, rows):
         if out.exists() and out.stat().st_size > 0:
             skipped += 1
             continue
-        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error',
-                        '-ss', f'{seek:.3f}', '-i', str(src),
-                        '-frames:v', '1', '-q:v', '3', '-y', str(out)], check=True)
+        ff(['ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-ss', f'{seek:.3f}', '-i', str(src),
+            '-frames:v', '1', '-q:v', '3', '-y', str(out)],
+           f'frame extraction at {r["timestamp_mmss"]}')
         made += 1
     log(f'[4/6] frames: {made} new, {skipped} reused, {len(rows)} total')
     return made + skipped == len(rows)
@@ -492,7 +517,7 @@ def step_sheets(d, rows):
             f'xstack=inputs={PER}:layout={layout}[out]'
         cmd += ['-filter_complex', fc, '-map', '[out]', '-frames:v', '1',
                 '-q:v', '3', '-y', str(out)]
-        subprocess.run(cmd, check=True)
+        ff(cmd, f'contact sheet {out.name}')
     with open(d / 'data' / 'sheet_index.csv', 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(['sheet', 'span_mmss', 'cells'])
