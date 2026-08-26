@@ -110,6 +110,28 @@ class TestParseTime(unittest.TestCase):
             wv.parse_time('abc')
 
 
+class TestSubtitleLangs(unittest.TestCase):
+    def test_sub_langs_is_explicit_never_a_wildcard(self):
+        """'en.*' also matches YouTube's auto-TRANSLATED tracks (en-de-DE,
+        en-fr-FR, ...) - one HTTP request each, which reliably drew a 429
+        and aborted the run before info.json was written."""
+        self.assertNotIn('*', wv.SUB_LANGS)
+        self.assertIn('en', wv.SUB_LANGS.split(','))
+        self.assertIn('en-orig', wv.SUB_LANGS.split(','))
+
+    def test_rate_limit_gets_its_own_remediation(self):
+        msg = wv.remediation(['ERROR: HTTP Error 429: Too Many Requests'])
+        self.assertIn('429', msg)
+        self.assertIn('re-run', msg)
+
+    def test_sabr_and_bot_remediation_still_distinct(self):
+        self.assertIn('--player-client',
+                      wv.remediation(['ERROR: SABR streaming not supported']))
+        self.assertIn('--cookies-from-browser',
+                      wv.remediation(['ERROR: Sign in to confirm you are not a bot']))
+        self.assertEqual(wv.remediation(['ERROR: video unavailable']), '')
+
+
 class TestVideoId(unittest.TestCase):
     def test_extracts_id_from_every_youtube_url_shape(self):
         for url in ('https://www.youtube.com/watch?v=dQw4w9WgXcQ',

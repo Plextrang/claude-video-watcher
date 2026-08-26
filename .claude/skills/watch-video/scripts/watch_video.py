@@ -60,6 +60,10 @@ JS_RUNTIME = []    # ['--js-runtimes', 'node'] when this yt-dlp supports it
 
 # The two yt-dlp failures that are recoverable but not guessable.
 BOT_HINTS = ('confirm you', 'not a bot', 'sign in to confirm')
+RATE_HINTS = ('429', 'too many requests')
+# Explicit, never 'en.*': that pattern also matches YouTube's auto-TRANSLATED
+# tracks (en-de-DE, en-fr-FR, ...), one HTTP request each.
+SUB_LANGS = 'en,en-orig,en-US,en-GB'
 SABR_HINTS = ('sabr', 'requested format is not available',
               'fragment', 'missing a url')
 
@@ -94,6 +98,10 @@ def remediation(tail):
     """Turn yt-dlp's two recoverable failures into instructions. Neither is
     guessable under pressure, and both are unrecoverable mid-record."""
     blob = '\n'.join(tail).lower()
+    if any(h in blob for h in RATE_HINTS):
+        return ('\n\nYouTube rate-limited the request (HTTP 429). Wait a '
+                'few minutes and re-run - the run is resumable, so nothing '
+                'already downloaded is lost.')
     if any(h in blob for h in SABR_HINTS):
         return ('\n\nThis looks like YouTube SABR streaming. Retry with:\n'
                 '  --player-client tv,web_safari,mweb\n'
@@ -184,6 +192,15 @@ def preflight(font_override=None):
                          'copy the font somewhere without one, then --font'))
         font = None
     return problems, warnings, font
+
+
+def run_soft(cmd, **kw):
+    """Run without exiting on failure. yt-dlp returns non-zero when a single
+    subtitle variant fails, even though everything actually needed came down
+    fine - so the caller decides based on what landed on disk, not on the
+    exit code."""
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          errors='ignore', **kw)
 
 
 def ff(cmd, what, **kw):
@@ -322,11 +339,25 @@ def step_transcript(d, url, vid_hint=None):
                      'has no cached transcript or metadata to reuse:\n  '
                      f'{d}\nPass the URL as well.')
         log('[1/6] transcript + metadata')
-        run(ytdlp(['--skip-download', '--write-auto-subs', '--write-subs',
-                   '--sub-langs', 'en.*', '--sub-format', 'vtt',
-                   '--write-info-json', '-o', str(d / '%(id)s'), '--', url]))
+        # SUB_LANGS is deliberately explicit. 'en.*' also matches YouTube's
+        # auto-TRANSLATED tracks (en-de-DE, en-fr-FR, ...), so it fired off
+        # ~100 subtitle requests per video and reliably drew HTTP 429 - which
+        # then aborted the whole run before info.json was even written.
+        p = run_soft(ytdlp(
+            ['--skip-download', '--write-auto-subs', '--write-subs',
+             '--sub-langs', SUB_LANGS, '--sub-format', 'vtt',
+             '--ignore-errors', '--write-info-json',
+             '-o', str(d / '%(id)s'), '--', url]))
         subs = sorted(d.glob('*.en*.vtt'))
         info = next(iter(d.glob('*.info.json')), None)
+        # Judge on what landed, not on the exit code: a single failed
+        # subtitle variant must not kill a run whose captions are all here.
+        if not info or not subs:
+            tail = [l for l in (p.stderr or '').strip().split('\n') if l.strip()]
+            if p.returncode != 0:
+                sys.exit('FATAL: yt-dlp could not fetch the transcript or '
+                         'metadata.\n' + '\n'.join(tail[-6:] or ['(no output)'])
+                         + remediation(tail))
     else:
         log('[1/6] transcript + metadata (cached)')
 
