@@ -157,6 +157,38 @@ class TestMergeShots(unittest.TestCase):
         self.assertEqual(wv.merge_shots([]), [])
 
 
+class TestDepth(unittest.TestCase):
+    def test_depth_cannot_touch_detection(self):
+        """The cardinal rule from VIDEO-ANALYSIS-METHOD section 4: never tune
+        detection to hit a target. Depth may only control which frames get
+        EXTRACTED, so no depth is allowed to carry a threshold or merge
+        setting. Measured live: standard/deep/max on the same window all
+        reported merged 27 (27.0/min) while frames went 27 -> 35 -> 57."""
+        allowed = {'gap_limit', 'fill_every', 'subs'}
+        for name, cfg in wv.DEPTHS.items():
+            self.assertEqual(set(cfg), allowed, f'{name} may only set {allowed}')
+
+    def test_depth_only_ever_adds_frames(self):
+        order = ['standard', 'deep', 'max']
+        for lighter, heavier in zip(order, order[1:]):
+            a, b = wv.DEPTHS[lighter], wv.DEPTHS[heavier]
+            self.assertLessEqual(b['fill_every'], a['fill_every'])
+            self.assertLessEqual(b['gap_limit'], a['gap_limit'])
+
+    def test_default_is_the_hand_tuned_setting(self):
+        """5s fill in gaps over 15s was tuned by hand - 10s demonstrably
+        stepped over a sponsor card. The default must not drift."""
+        self.assertEqual(wv.DEFAULT_DEPTH, 'standard')
+        self.assertEqual(wv.DEPTHS['standard'],
+                         {'gap_limit': wv.GAP_LIMIT,
+                          'fill_every': wv.FILL_EVERY, 'subs': False})
+
+    def test_only_deeper_modes_recover_sub_second_cuts(self):
+        self.assertFalse(wv.DEPTHS['standard']['subs'])
+        self.assertTrue(wv.DEPTHS['deep']['subs'])
+        self.assertTrue(wv.DEPTHS['max']['subs'])
+
+
 class TestResolveWindow(unittest.TestCase):
     def test_full_video(self):
         self.assertEqual(wv.resolve_window({'duration': 600}, None, None),
@@ -322,6 +354,21 @@ class TestInvalidation(TempDirCase):
         d = self._seed([0, 600], threshold=0.2)
         wv.invalidate_if_params_changed(d, 0.0, 600.0, 0.12)
         self.assertFalse((d / 'data' / 'cuts.csv').exists())
+
+    def test_depth_change_discards_it(self):
+        """Depth changes which frames exist, so a cache built at another
+        depth is the wrong evidence even though its pacing would match."""
+        d = self._seed([0, 600])
+        wv.invalidate_if_params_changed(d, 0.0, 600.0, None, depth='deep')
+        self.assertFalse((d / 'data' / 'cuts.csv').exists())
+
+    def test_same_depth_keeps_it(self):
+        d = self._seed([0, 600])
+        (d / 'data' / 'pacing.json').write_text(
+            json.dumps({'window': [0, 600], 'threshold_used': 0.2,
+                        'depth': 'deep'}), encoding='utf-8')
+        wv.invalidate_if_params_changed(d, 0.0, 600.0, None, depth='deep')
+        self.assertTrue((d / 'data' / 'cuts.csv').exists())
 
     def test_missing_pacing_json_discards_rather_than_crashes(self):
         d = self._seed([0, 600])

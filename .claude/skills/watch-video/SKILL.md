@@ -1,6 +1,6 @@
 ---
 name: watch-video
-description: Analyze a YouTube video visually — extract one frame per shot plus dense uniform fill, build timestamped contact sheets, transcript, pacing and audio-energy data, then write a fixed-schema NOTES.md covering hook map, animation inventory, reproduction cost in credits, pacing, on-screen text, structure, composition mix, audio, packaging and a steal list. Trigger on ANY request to look at, study, break down or learn from a video, including bare phrasings — "analyze this video", "analyse this video", "analyze this video for my channel", "break down this video", "break down this video's hook", "watch this video", "study this video", "what's this video doing", "how is this hook built", "how did they edit this", "what animations does this use", "what can I steal from this", "how is this packaged", "review this competitor video" — or whenever Eddie pastes a YouTube URL in any context about editing, animation, hooks, pacing, thumbnails or packaging. Also fires on "run the pipeline", "watch-video", or the script name. A bare YouTube URL with no instruction counts. NOT for transcript-only summaries or for answering what a video says — this exists because the useful information is visual.
+description: Analyze a YouTube video visually — extract one frame per shot plus dense uniform fill, build timestamped contact sheets, transcript, pacing and audio-energy data, then write a fixed-schema NOTES.md covering hook map, animation inventory, reproduction cost in credits, pacing, on-screen text, structure, composition mix, audio, packaging and a steal list. Trigger on ANY request to look at, study, break down or learn from a video, including bare phrasings — "analyze this video", "analyse this video", "analyze this video for my channel", "break down this video", "break down this video's hook", "watch this video", "study this video", "what's this video doing", "how is this hook built", "how did they edit this", "what animations does this use", "what can I steal from this", "how is this packaged", "review this competitor video" — or whenever a YouTube URL is pasted in any context about editing, animation, hooks, pacing, thumbnails or packaging. Also fires on "run the pipeline", "watch-video", or the script name. A bare YouTube URL with no instruction counts. NOT for transcript-only summaries or for answering what a video says — this exists because the useful information is visual.
 ---
 
 # watch-video
@@ -37,6 +37,7 @@ Flags:
 - `--start T` / `--end T` — analyse a segment only. Accepts `SS`, `MM:SS` or `HH:MM:SS`.
 - `--hook-only` — first 60 seconds only
 - `--threshold N` — override scene threshold
+- `--depth standard|deep|max` — how many frames to **extract**. See below.
 - `--no-download` — reuse an already-downloaded source
 - `--keep-source` — do not delete the source file when done
 - `--font PATH` — bold TTF for sheet labels (default: auto-detected per platform)
@@ -55,13 +56,51 @@ Resumable. Existing frames, sheets and data are reused, so re-running is cheap �
 video re-runs in about two seconds with no network. A re-run finds its folder by **video id**,
 not by title, so a retitled video still lands in its original folder.
 
-The cache is invalidated automatically if `--start`, `--end` or `--threshold` differ from the run
-that produced it. It will say what changed and re-detect. That is correct, not a fault.
+The cache is invalidated automatically if `--start`, `--end`, `--threshold` or `--depth` differ
+from the run that produced it. It will say what changed and re-detect. That is correct, not a fault.
 
 The script deletes the source video once frames and audio both succeed. Frames, sheets,
 CSVs and NOTES.md are what gets kept; the source is disposable and re-downloadable.
 
 Quote every path. These live under paths with spaces in them.
+
+## Depth — choose it before running, it is not free to change your mind
+
+`--depth` controls how many frames are **extracted**. It never touches the detection threshold or
+the 1.0s merge window, so **`merged_shots_per_min` is identical at every depth** — the pacing you
+report describes the video, never your setting. Verified: standard/deep/max over the same 60s
+window all returned `merged 27 (27.0/min)` while frames went 27 → 35 → 57.
+
+| | fill interval | fills gaps over | recovers sub-second cuts |
+|---|---|---|---|
+| `standard` (default) | 5s | 15s | no |
+| `deep` | 3s | 8s | yes |
+| `max` | 1s | 2s | yes |
+
+**Two different blind spots, and depth is the only thing that closes either.**
+
+1. **Sub-second cuts.** The merge window keeps a camera push-in from being counted as fourteen
+   shots, but it also means nothing shorter than a second ever gets a frame. On a fast-cut edit
+   that is a third of all detections — 184 of 584 on one 36-minute video. `deep` and `max`
+   extract those frames back, tagged `sub` in `cuts.csv` and marked `<` on the sheets. **They are
+   still excluded from the shot count**, so pacing is unaffected.
+2. **Dense animation with no long gaps.** Fill only fires inside gaps, so a high-paced video gets
+   almost no fill — exactly the videos where the detector is blindest get the least extra coverage.
+   Lowering the gap limit is what fixes that.
+
+**When to reach for it:**
+- `standard` — the default. Use it unless something below applies.
+- `deep` — the request is about *how something was made*: animation inventory, hook construction,
+  "how did they edit this", a video that looks fast-cut or motion-graphics heavy.
+- `max` — close study of a **specific stretch**. Always pair with `--hook-only` or `--start/--end`;
+  on a full-length video it will blow past the frame ceiling. `--hook-only --depth max` is the
+  right call for "break down this hook frame by frame".
+
+Changing depth **invalidates the cache** and re-extracts, which on a completed video means
+re-downloading the source. Pick the depth before the first run where you can.
+
+In section 4, if you used `deep` or `max`, say so and give the recovered sub-second count as a
+separate line. Do not fold it into shots per minute.
 
 ## What the pipeline decides, so you do not have to
 
@@ -157,12 +196,12 @@ Sheets are for structure, not for reading text. Cells downscale to ~520x290 — 
 title card appeared, not enough to read it. Reading happens in the microscope pass.
 
 Never silently reduce frame counts to save tokens. If a video would produce an unreasonable number
-of frames, say the number and let Eddie decide.
+of frames, say the number and let the user decide.
 
 **Runtime ceiling — measured, around 40 minutes.** A 36:07 video came to 469 frames and 53 sheets,
 about 228K image tokens: it fits, with nothing spare. The script prints the projected cost right
 after cut detection, and past 500 frames it warns that one session may not hold it. **Read that
-line.** If it fires, tell Eddie the number and offer to run `--hook-only` or a
+line.** If it fires, give the user the number and offer to run `--hook-only` or a
 `--start`/`--end` window instead — do not just plough on and run out of context mid-survey.
 
 ## Output schema — NOTES.md
@@ -219,7 +258,7 @@ out of the cross-video corpus.
 10. **Steal list.** Three to six specific, copyable techniques with timestamps. Concrete moves, not
     general praise.
 
-Sections 2, 3, 3b, 7, 9 and 10 are the ones Eddie actually uses. Weight the effort accordingly.
+Sections 2, 3, 3b, 7, 9 and 10 are the ones that actually get used. Weight the effort accordingly.
 
 ## After every run — write the takeaway
 
@@ -272,9 +311,9 @@ is there, carry it into `PATTERNS.md` and treat every finding as provisional. Do
 4. **Packaging patterns.** From section 9: do title and thumbnail extend each other or repeat each
    other, and does that split along the multiplier line.
 5. **Contradictions.** Anything the corpus does *not* support, explicitly including cases where the
-   data contradicts a belief already written in the AI Builders Club rules. Mandatory. "None found"
+   data contradicts a belief the user already holds or has written down. Mandatory. "None found"
    is acceptable only after actually looking.
-6. **What this means for the next AIBC video.** Concrete targets with numbers: shots per minute,
+6. **What this means for the next video.** Concrete targets with numbers: shots per minute,
    runtime, first-value timestamp, animation count and credit budget, hook beat order.
 7. **Confidence.** What n supports, what it does not, and which single dimension would benefit most
    from more analyses.

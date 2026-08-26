@@ -36,6 +36,22 @@ MIN_MERGED_PER_MIN = 4.0   # below this we are missing cuts -> lower threshold
 BAND = (5.0, 30.0)         # merged shots/min. Reported, never chased.
 GAP_LIMIT = 15.0           # gaps longer than this get uniform fill
 FILL_EVERY = 5.0
+
+# Depth changes how many frames are EXTRACTED. It never touches the detection
+# threshold or the merge window, so merged_shots_per_min - the reported pacing
+# figure - is identical at every depth. Tuning detection to hit a target is
+# the one thing VIDEO-ANALYSIS-METHOD section 4 exists to forbid.
+#
+#   gap_limit  fill any gap longer than this
+#   fill_every seconds between fill frames inside such a gap
+#   subs       also extract frames at detections the 1.0s merge window
+#              discarded, so sub-second cuts stop being invisible
+DEPTHS = {
+    'standard': {'gap_limit': 15.0, 'fill_every': 5.0, 'subs': False},
+    'deep':     {'gap_limit': 8.0,  'fill_every': 3.0, 'subs': True},
+    'max':      {'gap_limit': 2.0,  'fill_every': 1.0, 'subs': True},
+}
+DEFAULT_DEPTH = 'standard'
 DEAD_SSIM = 0.97           # fills this similar => genuinely static
 COLS, ROWS = 3, 3
 CW, CH = 522, 294          # 3x3 -> 1566x882, long edge under 1568
@@ -537,7 +553,8 @@ def resolve_window(meta, start, end, src=None):
     return win_start, win_end, duration
 
 
-def invalidate_if_params_changed(d, win_start, win_end, threshold_override):
+def invalidate_if_params_changed(d, win_start, win_end, threshold_override,
+                                 depth=DEFAULT_DEPTH):
     """cuts.csv used to be reused whenever it existed, with no check that the
     window or threshold matched the run that produced it. So --hook-only after
     a full run silently reported full-run pacing, and a full run after
@@ -567,6 +584,10 @@ def invalidate_if_params_changed(d, win_start, win_end, threshold_override):
                 and prev.get('threshold_used') != threshold_override):
             reasons.append(f'threshold {prev.get("threshold_used")} -> '
                            f'{threshold_override}')
+        # Depth changes which frames exist, so a cache built at another
+        # depth is the wrong evidence even though pacing would match.
+        if prev.get('depth', DEFAULT_DEPTH) != depth:
+            reasons.append(f'depth {prev.get("depth", DEFAULT_DEPTH)} -> {depth}')
     if not reasons:
         return
 
@@ -581,7 +602,7 @@ def invalidate_if_params_changed(d, win_start, win_end, threshold_override):
         (d / 'data' / name).unlink(missing_ok=True)
 
 
-def step_cuts(d, src, meta, threshold_override, start, end):
+def step_cuts(d, src, meta, threshold_override, start, end, depth=DEFAULT_DEPTH):
     win_start, win_end, duration = resolve_window(meta, start, end, src)
     win_dur = win_end - win_start
     if win_dur <= 0:
@@ -640,25 +661,43 @@ def step_cuts(d, src, meta, threshold_override, start, end):
                  'merged_shots_per_min': round(len(sec_merged) / (win_dur / 60), 1)}
 
     shots = set(merged)
+    cfg = DEPTHS[depth]
+
+    # Sub-second cuts. The 1.0s merge window is what keeps a camera push-in
+    # from being reported as fourteen shots, so it stays - but it also means
+    # nothing shorter than a second ever gets a frame. On a fast-cut edit that
+    # discards a third of all detections. At deep/max those timestamps get
+    # frames back, tagged 'sub' so they are visibly NOT counted as shots.
+    subs = set()
+    if cfg['subs']:
+        merged_set = set(merged)
+        subs = {t for t in raw if t not in merged_set}
 
     # Uniform fill. Cut detection is blind to slow morphing motion graphics,
     # so long gaps are sampled densely rather than trusted as static.
-    low_cut, filled = [], list(merged)
+    low_cut, filled = [], list(merged) + sorted(subs)
     bounds = merged + [win_end]
     for a, b in zip(bounds, bounds[1:]):
-        if b - a > GAP_LIMIT:
-            low_cut.append([a, b])
-            t = a + FILL_EVERY
+        if b - a > cfg['gap_limit']:
+            # Only the standard gap counts as a reportable low-cut section.
+            # Deeper fill lowers the gap limit to gather frames, and calling a
+            # nine-second gap a "low-cut section" would inflate section 4.
+            if b - a > GAP_LIMIT:
+                low_cut.append([a, b])
+            t = a + cfg['fill_every']
             while t < b - 1.0:
                 filled.append(round(t, 3))
-                t += FILL_EVERY
+                t += cfg['fill_every']
     filled = sorted(set(filled))
+
+    def source_of(t):
+        return 'shot' if t in shots else ('sub' if t in subs else 'fill')
 
     with open(cuts_csv, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(['index', 'timestamp_sec', 'timestamp_mmss', 'source'])
         for i, t in enumerate(filled, 1):
-            w.writerow([i, f'{t:.3f}', mmss(t), 'shot' if t in shots else 'fill'])
+            w.writerow([i, f'{t:.3f}', mmss(t), source_of(t)])
     rows = list(csv.DictReader(open(cuts_csv, encoding='utf-8')))
 
     per_min = len(merged) / (win_dur / 60)
@@ -677,8 +716,10 @@ def step_cuts(d, src, meta, threshold_override, start, end):
         'median_shot_sec': round(st.median(gaps), 2) if gaps else None,
         'mean_shot_sec': round(st.mean(gaps), 2) if gaps else None,
         'longest_shot_sec': round(max(gaps), 1) if gaps else None,
+        'depth': depth,
         'total_frames': len(filled),
-        'fill_frames': len(filled) - len(merged),
+        'sub_frames': len(subs),
+        'fill_frames': len(filled) - len(merged) - len(subs),
         'low_cut_sections': [],
     }
     buckets = {}
@@ -694,8 +735,13 @@ def step_cuts(d, src, meta, threshold_override, start, end):
     pacing['low_cut_raw'] = low_cut
     (d / 'data' / 'pacing.json').write_text(json.dumps(pacing, indent=2), encoding='utf-8')
 
-    log(f'   threshold {thr}  raw {len(raw)}  merged {len(merged)} '
-        f'({per_min:.1f}/min)  fills {len(filled) - len(merged)}  total {len(filled)}')
+    log(f'   depth {depth}  threshold {thr}  raw {len(raw)}  '
+        f'merged {len(merged)} ({per_min:.1f}/min)  '
+        f'subs {len(subs)}  fills {len(filled) - len(merged) - len(subs)}  '
+        f'total {len(filled)}')
+    if cfg['subs'] and subs:
+        log(f'   recovered {len(subs)} sub-second cuts the 1.0s merge window '
+            f'discarded - extracted as frames, NOT counted as shots')
     log(f'   0.12 reference: {secondary["merged_shots"]} merged '
         f'({secondary["merged_shots_per_min"]}/min) - use as the upper end of the '
         f'range if section 7 shows this is screen-recording heavy')
@@ -943,7 +989,8 @@ def step_sheets(d, rows):
         for i in range(PER):
             if i < len(chunk):
                 _, idx, ts, srctype = chunk[i]
-                tag = f'{idx:03d}  {ts}' + ('  ~' if srctype == 'fill' else '')
+                mark = {'fill': '  ~', 'sub': '  <'}.get(srctype, '')
+                tag = f'{idx:03d}  {ts}{mark}'
                 parts.append(
                     f'[{i}:v]scale={CW}:{CH}:force_original_aspect_ratio=decrease,'
                     f'pad={CW}:{CH}:(ow-iw)/2:(oh-ih)/2:color=#101010,'
@@ -1592,6 +1639,13 @@ def main():
                     help='analyse until here (SS, MM:SS or HH:MM:SS)')
     ap.add_argument('--hook-only', action='store_true', help='first 60s only, dense')
     ap.add_argument('--threshold', type=float, help='override scene threshold')
+    ap.add_argument('--depth', choices=sorted(DEPTHS), default=DEFAULT_DEPTH,
+                    help='how many frames to EXTRACT. Never changes the '
+                         'detection threshold, so reported pacing is '
+                         'identical at every depth. standard: fill every 5s '
+                         'in gaps over 15s. deep: every 3s over 8s, plus '
+                         'recovered sub-second cuts. max: every 1s over 2s '
+                         '(pair with --hook-only or --start/--end).')
     ap.add_argument('--no-download', action='store_true', help='reuse existing source')
     ap.add_argument('--keep-source', action='store_true', help='do not delete source when done')
     ap.add_argument('--cookies-from-browser', metavar='BROWSER',
@@ -1735,7 +1789,8 @@ def main():
     # Before the download, so a discarded cache re-fetches what it needs.
     prov_start, prov_end, prov_dur = resolve_window(meta, start, end)
     if prov_dur > 0:
-        invalidate_if_params_changed(d, prov_start, prov_end, a.threshold)
+        invalidate_if_params_changed(d, prov_start, prov_end, a.threshold,
+                                     a.depth)
     else:
         log('   ! metadata reports no duration - skipping the cache '
             'parameter check; the window resolves after download')
@@ -1748,7 +1803,8 @@ def main():
     # duration can fall back to ffprobe and --end can be clamped to it.
     win_start, win_end, _ = resolve_window(meta, start, end, src)
 
-    pacing, rows = step_cuts(d, src, meta, a.threshold, win_start, win_end)
+    pacing, rows = step_cuts(d, src, meta, a.threshold, win_start, win_end,
+                             a.depth)
     project_cost(len(rows))
     frames_ok = step_frames(d, src, rows)
     classify_low_cut(d, pacing, rows)

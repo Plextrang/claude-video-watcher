@@ -44,14 +44,39 @@ py ".claude\skills\watch-video\scripts\watch_video.py" "<URL>"
 ```
 
 Useful flags: `--hook-only` (first 60s), `--start 2:15 --end 2:45` (a segment, in `MM:SS`),
-`--slug NAME`, `--threshold N`, `--keep-source`, `--font PATH`, `--patterns`.
+`--depth deep` (see below), `--slug NAME`, `--keep-source`, `--font PATH`, `--patterns`.
+
+### Depth: more frames, same measurement
+
+`--depth` controls how many frames are **extracted**. It never touches the detection threshold
+or the merge window, so the reported shots-per-minute is **identical at every depth** — the
+pacing figure describes the video, never your setting. Verified on one 60s window: all three
+depths returned `merged 27 (27.0/min)` while frames went 27 → 35 → 57.
+
+| | fill interval | fills gaps over | recovers sub-second cuts |
+|---|---|---|---|
+| `standard` (default) | 5s | 15s | no |
+| `deep` | 3s | 8s | yes |
+| `max` | 1s | 2s | yes |
+
+It exists to close two blind spots. The 1.0s merge window stops a camera push-in being counted
+as fourteen shots, but it also means **nothing shorter than a second ever gets a frame** — on
+one fast-cut video that discarded 184 of 584 detections. And fill only fires inside long gaps,
+so high-paced videos, where the detector is blindest, get the least extra coverage.
+
+```bash
+py ".claude\skills\watch-video\scripts\watch_video.py" "<URL>" --hook-only --depth max
+```
+
+Use `deep` when the question is how something was made; use `max` only on a **segment** —
+on a full video it will blow past the frame ceiling. Changing depth invalidates the cache.
 
 Resumable — existing frames, sheets and data are reused, so re-running is cheap. A completed video
 re-runs in about two seconds with no network. Re-runs find their folder by **video id**, so a
 retitled video still lands in its original folder rather than starting a duplicate.
 
-The cache invalidates itself if `--start`, `--end` or `--threshold` differ from the run that
-produced it — it says what changed and re-detects.
+The cache invalidates itself if `--start`, `--end`, `--threshold` or `--depth` differ from the run
+that produced it — it says what changed and re-detects.
 
 ### When YouTube fights back
 
