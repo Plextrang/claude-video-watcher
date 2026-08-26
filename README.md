@@ -117,7 +117,7 @@ Everything goes in `video-research\` at the repo root, so a clone is self-contai
 nothing to set up by hand.
 
 ```
-Claude Video Watcher\
+claude-video-watcher\            the folder `git clone` creates
 ├── .claude\skills\watch-video\     the tool
 ├── tests\                          py -m unittest discover -s tests
 └── video-research\                 GITIGNORED - never committed
