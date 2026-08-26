@@ -348,11 +348,27 @@ def classify_low_cut(d, pacing, rows):
     """A low-cut section is only a true dead zone if its fill frames come back
     visually near-identical. Otherwise it is dense animation the detector
     cannot see, which is the opposite of dead."""
-    if not pacing.get('low_cut_raw'):
-        (d / 'data' / 'low_cut_sections.csv').write_text(
-            'start_sec,end_sec,start_mmss,end_mmss,length_sec,mean_ssim,verdict\n',
-            encoding='utf-8')
+    out_csv = d / 'data' / 'low_cut_sections.csv'
+    header = ('start_sec,end_sec,start_mmss,end_mmss,length_sec,'
+              'mean_ssim,verdict\n')
+
+    # Two different states, told apart by key PRESENCE, never by truthiness.
+    # A completed run pops low_cut_raw and rewrites pacing.json, so every
+    # re-run reads back a cached pacing with no such key. Reading that as
+    # "this video has no low-cut sections" overwrote a populated CSV with a
+    # bare header - and low_cut_sections.csv is the first file SKILL.md reads.
+    if 'low_cut_raw' not in pacing:
+        if not out_csv.exists():
+            out_csv.write_text(header, encoding='utf-8')
         return
+
+    if not pacing['low_cut_raw']:
+        out_csv.write_text(header, encoding='utf-8')
+        pacing.pop('low_cut_raw', None)
+        (d / 'data' / 'pacing.json').write_text(
+            json.dumps(pacing, indent=2), encoding='utf-8')
+        return
+
     frames = d / 'frames'
     out = []
     for a, b in pacing['low_cut_raw']:
@@ -367,7 +383,7 @@ def classify_low_cut(d, pacing, rows):
                    else 'low-cut, visually active')
         out.append([f'{a:.3f}', f'{b:.3f}', mmss(a), mmss(b), f'{b - a:.1f}',
                     mean if mean is not None else '', verdict])
-    with open(d / 'data' / 'low_cut_sections.csv', 'w', newline='', encoding='utf-8') as f:
+    with open(out_csv, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(['start_sec', 'end_sec', 'start_mmss', 'end_mmss',
                     'length_sec', 'mean_ssim', 'verdict'])
