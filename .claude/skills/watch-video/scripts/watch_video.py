@@ -44,6 +44,8 @@ YT_ID = re.compile(r'(?:v=|/shorts/|youtu\.be/|/embed/|/live/|/v/)'
 # rebound, so the module-level name ytdlp() closes over stays correct.
 COOKIES = []
 EXTRACTOR_ARGS = []
+YTDLP_CMD = []     # resolved once by resolve_ytdlp(): module or binary
+JS_RUNTIME = []    # ['--js-runtimes', 'node'] when this yt-dlp supports it
 
 # The two yt-dlp failures that are recoverable but not guessable.
 BOT_HINTS = ('confirm you', 'not a bot', 'sign in to confirm')
@@ -90,9 +92,84 @@ def remediation(tail):
     return ''
 
 
+def resolve_ytdlp():
+    """The pip module and the standalone binary are different installs and
+    most people have exactly one. This hardcoded `sys.executable -m yt_dlp`,
+    which is what this machine has - but brew, winget and pipx all produce a
+    binary with no module, so every viewer who followed the usual install
+    instructions got 'No module named yt_dlp' on their first run."""
+    if YTDLP_CMD:
+        return YTDLP_CMD
+    p = subprocess.run([sys.executable, '-m', 'yt_dlp', '--version'],
+                       capture_output=True, text=True, errors='ignore')
+    if p.returncode == 0:
+        YTDLP_CMD[:] = [sys.executable, '-m', 'yt_dlp']
+    elif shutil.which('yt-dlp'):
+        YTDLP_CMD[:] = [shutil.which('yt-dlp')]
+    else:
+        return None
+    # --js-runtimes is recent. Probe rather than parse a version string, so
+    # an older yt-dlp degrades instead of dying on 'unrecognized arguments'.
+    probe = subprocess.run(YTDLP_CMD + ['--js-runtimes', 'node', '--version'],
+                           capture_output=True, text=True, errors='ignore')
+    JS_RUNTIME[:] = ['--js-runtimes', 'node'] if probe.returncode == 0 else []
+    return YTDLP_CMD
+
+
 def ytdlp(args):
-    return ([sys.executable, '-m', 'yt_dlp', '--js-runtimes', 'node']
-            + COOKIES + EXTRACTOR_ARGS + args)
+    cmd = resolve_ytdlp()
+    if cmd is None:
+        sys.exit('FATAL: yt-dlp is not available.\n  ' + install_hint('yt-dlp'))
+    return cmd + JS_RUNTIME + COOKIES + EXTRACTOR_ARGS + args
+
+
+def install_hint(tool):
+    system = platform.system()
+    ffmpeg = {'Windows': 'winget install Gyan.FFmpeg',
+              'Darwin': 'brew install ffmpeg'}
+    table = {
+        'ffmpeg': ffmpeg,
+        'ffprobe': ffmpeg,
+        'yt-dlp': {'Windows': f'"{sys.executable}" -m pip install -U yt-dlp'
+                              '   (or: winget install yt-dlp.yt-dlp)',
+                   'Darwin': 'brew install yt-dlp   (or: pipx install yt-dlp)'},
+        'node': {'Windows': 'winget install OpenJS.NodeJS.LTS',
+                 'Darwin': 'brew install node'},
+    }
+    return table.get(tool, {}).get(
+        system, f'install {tool} and put it on PATH')
+
+
+def preflight(font_override=None):
+    """Everything the pipeline shells out to, checked before it is needed.
+    Without this a viewer with no ffmpeg got FileNotFoundError: [WinError 2].
+    Returns (problems, warnings, resolved_font)."""
+    problems, warnings = [], []
+    for tool in ('ffmpeg', 'ffprobe'):
+        if not shutil.which(tool):
+            problems.append((tool, 'not on PATH', install_hint(tool)))
+    if resolve_ytdlp() is None:
+        problems.append(('yt-dlp', 'neither the Python module nor the binary '
+                                   'is available', install_hint('yt-dlp')))
+    elif not JS_RUNTIME:
+        warnings.append(('yt-dlp', 'too old for --js-runtimes; YouTube may '
+                                   'refuse some videos', 'run with --update'))
+    if not shutil.which('node'):
+        warnings.append(('node', "not on PATH - yt-dlp uses it to solve "
+                                 "YouTube's JS challenge; some videos will "
+                                 "fail without it", install_hint('node')))
+    font, tried = resolve_font(font_override)
+    if not font:
+        problems.append(('font', f'no bold TTF found ({len(tried)} paths '
+                                 f'tried) for the contact sheet labels',
+                         'pass --font "path/to/a/bold.ttf"'))
+    elif "'" in font:
+        problems.append(('font', f"path contains an apostrophe, which "
+                                 f"ffmpeg's filtergraph parser cannot "
+                                 f"carry: {font}",
+                         'copy the font somewhere without one, then --font'))
+        font = None
+    return problems, warnings, font
 
 
 def ff(cmd, what, **kw):
@@ -858,20 +935,39 @@ def main():
     ap.add_argument('--font', metavar='PATH',
                     help='bold TTF for contact sheet labels '
                          '(default: auto-detected per platform)')
+    ap.add_argument('--check', action='store_true',
+                    help='report whether every dependency is present, then exit')
     a = ap.parse_args()
 
-    # Before any network or disk work. Contact sheets are the deliverable and
-    # drawtext needs a real font file, so this cannot be discovered late.
+    # Before any network or disk work. Everything the pipeline shells out to,
+    # plus the font, checked while a fix is still cheap.
+    problems, warnings, font = preflight(a.font)
+
+    if a.check:
+        log(f'platform : {platform.system()}')
+        log(f'python   : {sys.version.split()[0]}  {sys.executable}')
+        log(f'yt-dlp   : {" ".join(YTDLP_CMD) if YTDLP_CMD else "NOT FOUND"}')
+        log(f'font     : {font or "NOT FOUND"}')
+        for tool, what, hint in warnings:
+            log(f'WARN  {tool}: {what}\n      fix: {hint}')
+        for tool, what, hint in problems:
+            log(f'FAIL  {tool}: {what}\n      fix: {hint}')
+        if problems:
+            sys.exit(f'\n{len(problems)} problem(s). Fix the above and re-run '
+                     f'--check.')
+        log('\nready.')
+        return
+
+    for tool, what, hint in warnings:
+        log(f'WARNING: {tool} {what}\n         fix: {hint}')
+    if problems:
+        sys.exit('FATAL: missing dependencies.\n'
+                 + '\n'.join(f'  {t}: {w}\n    fix: {h}'
+                             for t, w, h in problems)
+                 + '\nRun with --check to re-test.')
+
     global FONT
-    FONT, tried = resolve_font(a.font)
-    if not FONT:
-        sys.exit('FATAL: no usable font for the contact sheet labels.\n'
-                 'Tried:\n  ' + '\n  '.join(tried)
-                 + '\nPass one with --font "path/to/a/bold.ttf".')
-    if "'" in FONT:
-        sys.exit(f"FATAL: the font path contains an apostrophe, which ffmpeg's "
-                 f"filtergraph parser cannot carry: {FONT}\n"
-                 f'Copy the font somewhere without one and pass --font.')
+    FONT = font
 
     # Mutate in place: ytdlp() reads these module-level lists on every call.
     if a.cookies_from_browser:
