@@ -19,6 +19,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# A video title carrying an emoji or a non-Latin script used to kill log()
+# outright on a cp1252 console: UnicodeEncodeError, mid-run, no output.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
 # ---------------------------------------------------------------- tuning ----
 BASE_THRESHOLD = 0.20      # fixed. Only lowered if we are genuinely missing cuts.
 THRESHOLD_LADDER = [0.15, 0.12]
@@ -36,6 +44,7 @@ PER = COLS * ROWS
 # missing font must fail at startup rather than after a 300 MB download.
 FONT = None
 TAG = re.compile(r'<[^>]*>')
+CUE_TIMING = re.compile(r'<\d{2}:\d{2}:\d{2}\.\d{3}>')   # auto-subs only
 PTS = re.compile(r'pts_time:([0-9.]+)')
 YT_ID = re.compile(r'(?:v=|/shorts/|youtu\.be/|/embed/|/live/|/v/)'
                    r'([A-Za-z0-9_-]{11})')
@@ -199,14 +208,33 @@ def url_video_id(url):
 
 # ------------------------------------------------------------- transcript ----
 def ts_to_sec(t):
-    h, m, s = t.split(':')
+    """WebVTT permits MM:SS.mmm as well as HH:MM:SS.mmm. YouTube always emits
+    three parts, so this only ever bit non-YouTube sources - with a
+    ValueError traceback rather than a message."""
+    parts = t.strip().split(':')
+    if len(parts) == 3:
+        h, m, s = parts
+    elif len(parts) == 2:
+        h, m, s = '0', parts[0], parts[1]
+    else:
+        raise ValueError(f'unparseable VTT timestamp: {t!r}')
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
 def parse_vtt(path):
     """Line-based. Whitespace-only separators make blank-line splitting unsafe,
     and YouTube emits ~10ms 'settle' cues that duplicate the previous line."""
-    lines = Path(path).read_text(encoding='utf-8', errors='ignore').split('\n')
+    text = Path(path).read_text(encoding='utf-8', errors='ignore')
+
+    # Two caption styles that need opposite handling. YouTube auto-subs ROLL:
+    # each cue repeats the previous line and appends the new one, so only the
+    # last line is new. Manual captions WRAP one sentence across lines, so
+    # every line is content - and taking only the last one silently threw
+    # half of every wrapped caption away. pick() prefers the manual track, so
+    # that was the common case. Inline <00:00:00.000><c> timing tags appear
+    # only in the auto format, which makes them the discriminator.
+    rolling = bool(CUE_TIMING.search(text))
+    lines = text.split('\n')
     raw, cur = [], None
     for line in lines:
         if '-->' in line:
@@ -223,8 +251,8 @@ def parse_vtt(path):
     if cur:
         raw.append(cur)
 
-    cues = [(c['start'], c['body'][-1]) for c in raw
-            if c['end'] - c['start'] >= 0.1 and c['body']]
+    cues = [(c['start'], c['body'][-1] if rolling else ' '.join(c['body']))
+            for c in raw if c['end'] - c['start'] >= 0.1 and c['body']]
     out, prev = [], None
     for start, text in cues:
         if text and text != prev:
@@ -473,7 +501,8 @@ def step_cuts(d, src, meta, threshold_override, start, end):
     if cuts_csv.exists():
         log('[3/6] cut detection (cached)')
         rows = list(csv.DictReader(open(cuts_csv, encoding='utf-8')))
-        return json.loads((d / 'data' / 'pacing.json').read_text()), rows
+        return json.loads((d / 'data' / 'pacing.json').read_text(
+            encoding='utf-8')), rows
 
     log('[3/6] cut detection')
 
@@ -801,7 +830,7 @@ def step_audio(d, src, rows, start, end):
         return False
 
     off = start or 0.0
-    txt = mfile.read_text(errors='ignore').split('\n')
+    txt = mfile.read_text(encoding='utf-8', errors='ignore').split('\n')
     samples, t = [], None
     for line in txt:
         m = re.match(r'frame:\d+\s+pts:\S+\s+pts_time:([0-9.]+)', line)
@@ -905,6 +934,24 @@ def step_audio(d, src, rows, start, end):
 
 
 # ----------------------------------------------------------------- main ------
+def parse_time(value):
+    """SS, MM:SS or HH:MM:SS, with optional decimals. Raw seconds only meant
+    reaching for a calculator to name a moment you are looking at."""
+    s = str(value).strip()
+    parts = s.split(':')
+    try:
+        if len(parts) == 1:
+            return float(parts[0])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError(
+        f'cannot parse time {value!r} - use SS, MM:SS or HH:MM:SS')
+
+
 def slugify(s):
     s = re.sub(r'[^a-zA-Z0-9]+', '-', (s or '').lower()).strip('-')
     return '-'.join(s.split('-')[:7]) or 'video'
@@ -916,8 +963,10 @@ def main():
     ap.add_argument('--slug', help='folder name (default: derived from title)')
     ap.add_argument('--root', default=None,
                     help=f'output root (default: {DEFAULT_ROOT}, a sibling of the repo)')
-    ap.add_argument('--start', type=float, help='analyse from this second')
-    ap.add_argument('--end', type=float, help='analyse until this second')
+    ap.add_argument('--start', type=parse_time, metavar='T',
+                    help='analyse from here (SS, MM:SS or HH:MM:SS)')
+    ap.add_argument('--end', type=parse_time, metavar='T',
+                    help='analyse until here (SS, MM:SS or HH:MM:SS)')
     ap.add_argument('--hook-only', action='store_true', help='first 60s only, dense')
     ap.add_argument('--threshold', type=float, help='override scene threshold')
     ap.add_argument('--no-download', action='store_true', help='reuse existing source')
