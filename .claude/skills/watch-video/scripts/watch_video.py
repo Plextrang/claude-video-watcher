@@ -61,12 +61,15 @@ BOT_HINTS = ('confirm you', 'not a bot', 'sign in to confirm')
 SABR_HINTS = ('sabr', 'requested format is not available',
               'fragment', 'missing a url')
 
-# The repo ships the tool only. Every analysis lands in a sibling folder outside
-# it, so no analysis output can ever end up inside version control.
-#   .../<parent>/<repo>/.claude/skills/watch-video/scripts/watch_video.py
-#   parents[4] == <repo>, so the sibling is parents[4].parent / 'video-research'
+# Every analysis lands in video-research/ inside the repo, so a clone is
+# self-contained and there is nothing to set up by hand. That output is kept
+# out of version control by .gitignore, NOT by being physically elsewhere -
+# one analysis is 8-35 MB of frames and sheets, so if that entry is ever
+# removed, the next commit carries the whole corpus.
+#   .../<repo>/.claude/skills/watch-video/scripts/watch_video.py
+#   parents[4] == <repo>
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_ROOT = REPO_ROOT.parent / 'video-research'
+DEFAULT_ROOT = REPO_ROOT / 'video-research'
 
 
 def mmss(s):
@@ -977,6 +980,23 @@ def step_audio(d, src, rows, start, end):
 
 
 # ----------------------------------------------------------------- main ------
+def gitignored(root):
+    """Is this output root actually excluded from version control? Prefer
+    git's own answer; fall back to reading .gitignore when git is absent."""
+    p = subprocess.run(['git', '-C', str(REPO_ROOT), 'check-ignore', '-q',
+                        str(root)], capture_output=True)
+    if p.returncode in (0, 1):
+        return p.returncode == 0
+    gi = REPO_ROOT / '.gitignore'
+    if not gi.exists():
+        return False
+    for line in gi.read_text(encoding='utf-8', errors='ignore').splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and line.strip('/') == root.name:
+            return True
+    return False
+
+
 def existing_slug_for(root, vid):
     """Find a folder already holding this video id.
 
@@ -1025,7 +1045,8 @@ def main():
     ap.add_argument('url', nargs='?', help='YouTube URL')
     ap.add_argument('--slug', help='folder name (default: derived from title)')
     ap.add_argument('--root', default=None,
-                    help=f'output root (default: {DEFAULT_ROOT}, a sibling of the repo)')
+                    help='output root (default: video-research/ inside the '
+                         'repo, which .gitignore excludes)')
     ap.add_argument('--start', type=parse_time, metavar='T',
                     help='analyse from here (SS, MM:SS or HH:MM:SS)')
     ap.add_argument('--end', type=parse_time, metavar='T',
@@ -1100,16 +1121,23 @@ def main():
         start, end = 0.0, 60.0
 
     root = (Path(a.root).resolve() if a.root else DEFAULT_ROOT)
-    # Analysis output must never land inside the repo. Catch a bad --root early,
-    # before a download writes 30 MB somewhere it will get committed.
-    try:
-        inside_repo = root == REPO_ROOT or REPO_ROOT in root.parents
-    except Exception:
-        inside_repo = False
-    if inside_repo:
-        sys.exit(f'FATAL: --root {root} is inside the repo ({REPO_ROOT}).\n'
-                 f'Analysis output belongs outside version control. '
-                 f'Default is {DEFAULT_ROOT}.')
+
+    # Nothing may write into git or skill metadata. Checked first, so a root
+    # that is about to be refused does not also draw a warning.
+    for forbidden in ('.git', '.claude'):
+        if forbidden in root.parts:
+            sys.exit(f'FATAL: --root {root} is inside {forbidden}/. '
+                     f'Pick somewhere else.')
+
+    # Output inside the repo means .gitignore is the ONLY thing keeping tens
+    # of MB per video out of a commit. Check it rather than assume it: this
+    # replaced a guard that made the separation physical.
+    if (REPO_ROOT / '.git').exists() and not gitignored(root):
+        log(f'WARNING: {root.name}/ is not covered by .gitignore, and one '
+            f'analysis is 8-35 MB.\n'
+            f'         Add this line to {REPO_ROOT / ".gitignore"}\n'
+            f'           /{root.name}/')
+
     # REPO_ROOT is parents[4], which assumes the skill still sits at
     # <repo>/.claude/skills/watch-video/scripts/. Copying the skill folder
     # into another project - the most likely thing a viewer does after the
