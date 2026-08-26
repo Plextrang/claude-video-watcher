@@ -5,8 +5,11 @@ description: Watch a YouTube video properly — extract one frame per shot plus 
 
 # watch-video
 
+**Start at Step 0. Ask what kind of analysis and how deep, before downloading anything.**
+
 Convert a video into the densest useful set of images plus text, then analyse that.
-Transcripts alone are useless here; the information needed is visual.
+A transcript is necessary and never sufficient: it is blind to every diagram, code block,
+terminal, chart, settings panel and title card. The frames are the point.
 
 **Core design decision: one frame per detected shot, plus dense uniform fill — never uniform sampling alone.**
 Uniform sampling lands mid-shot and misses short animations. An animation appearing IS a scene change.
@@ -36,6 +39,11 @@ If they pick `max`, say in the same breath that it must be paired with `--hook-o
 
 If the user already named a scope ("the hook", "from 2:15 to 2:45"), pass it and say you did.
 Take their answers, run the pipeline once with the right flags, and do not ask again.
+
+**If `AskUserQuestion` is not available** (a non-interactive run, or a harness without it), do not
+silently guess. Print the two choices as plain text, state which you are assuming and why —
+creator breakdown at `standard` unless the request clearly says otherwise — and say they can
+re-run with a different mode. The failure to avoid is answering a question that was never asked.
 
 ## Run the pipeline
 
