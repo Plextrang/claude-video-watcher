@@ -193,6 +193,56 @@ class TestFont(unittest.TestCase):
         self.assertEqual(wv.ff_font_arg(r'C:\Windows\Fonts\arialbd.ttf'),
                          'C\\:/Windows/Fonts/arialbd.ttf')
 
+    def test_macos_candidates_are_ordered_ttf_first(self):
+        """Helvetica.ttc is a font *collection* and drawtext handles those
+        less predictably, so it must stay the last resort."""
+        real = wv.platform.system
+        wv.platform.system = lambda: 'Darwin'
+        try:
+            cands = wv.font_candidates()
+        finally:
+            wv.platform.system = real
+        self.assertTrue(cands[0].endswith('Arial Bold.ttf'), cands[0])
+        ttc = [i for i, c in enumerate(cands) if c.endswith('.ttc')]
+        ttf = [i for i, c in enumerate(cands) if c.endswith('Verdana Bold.ttf')]
+        self.assertLess(ttf[0], ttc[0])
+
+    def test_scan_ranks_text_families_and_ignores_symbol_faces(self):
+        """A bold Wingdings would 'resolve' and render every timestamp as
+        gibberish, so the scan only accepts known text families."""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        for name in ('Wingdings Bold.ttf', 'Verdana Bold.ttf',
+                     'Arial Bold.ttf', 'Arial Regular.ttf'):
+            (tmp / name).write_bytes(b'\x00')
+        real = wv.FONT_DIRS.get('Darwin')
+        wv.FONT_DIRS['Darwin'] = [str(tmp)]
+        try:
+            found = [Path(f).name for f in wv.scan_font_dirs('Darwin')]
+        finally:
+            wv.FONT_DIRS['Darwin'] = real
+        self.assertEqual(found, ['Arial Bold.ttf', 'Verdana Bold.ttf'])
+
+    def test_falls_back_to_the_scan_when_no_named_file_exists(self):
+        """The named candidates are filename guesses about machines we cannot
+        test. The scan is a guess about directories, which is far safer - it
+        is what makes an unfamiliar Mac work rather than fail."""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / 'DejaVuSans-Bold.ttf').write_bytes(b'\x00')
+        real_cands, real_dirs = wv.font_candidates, dict(wv.FONT_DIRS)
+        wv.font_candidates = lambda: ['/nope/one.ttf', '/nope/two.ttf']
+        wv.FONT_DIRS[wv.platform.system()] = [str(tmp)]
+        try:
+            font, tried = wv.resolve_font()
+        finally:
+            wv.font_candidates = real_cands
+            wv.FONT_DIRS.clear()
+            wv.FONT_DIRS.update(real_dirs)
+        self.assertIsNotNone(font)
+        self.assertIn('DejaVuSans-Bold.ttf', font)
+        self.assertIn('scan found', tried[-1])
+
     @unittest.skipUnless(HAVE_FFMPEG, 'needs ffmpeg')
     def test_label_renders_through_a_path_containing_spaces(self):
         """The macOS case: /System/Library/Fonts/Supplemental/Arial Bold.ttf.

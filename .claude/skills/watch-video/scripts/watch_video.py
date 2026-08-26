@@ -801,6 +801,49 @@ def font_candidates():
             'Darwin': mac + linux + windows}.get(system, linux + mac + windows)
 
 
+# Where each platform keeps fonts. Scanning a directory is a far safer guess
+# than naming a file: the explicit list above is filenames on machines we
+# cannot test, this is the directory they live in, which barely changes.
+FONT_DIRS = {
+    'Darwin': ['/System/Library/Fonts/Supplemental', '/Library/Fonts',
+               '/System/Library/Fonts', '~/Library/Fonts'],
+    'Linux': ['/usr/share/fonts', '/usr/local/share/fonts',
+              '~/.local/share/fonts', '~/.fonts'],
+    'Windows': [],   # %WINDIR%\Fonts is already covered explicitly
+}
+# Ranked. Keeps the scan off symbol and display faces - a bold Wingdings
+# would "resolve" and then render the timestamps as gibberish.
+FONT_FAMILIES = ('arial', 'helvetica', 'verdana', 'tahoma', 'liberation',
+                 'dejavu', 'roboto', 'notosans', 'segoe', 'inter', 'lato',
+                 'opensans', 'sourcesans', 'freesans', 'nimbussans')
+
+
+def scan_font_dirs(system=None):
+    """Walk the platform's font directories for a bold face from a known text
+    family. This is what makes a Mac with an unexpected font set still work
+    instead of failing on a filename guess."""
+    hits = []
+    for raw in FONT_DIRS.get(system or platform.system(), []):
+        base = Path(raw).expanduser()
+        if not base.is_dir():
+            continue
+        try:
+            files = [f for ext in ('ttf', 'otf') for f in base.rglob('*.' + ext)]
+        except OSError:
+            continue
+        for f in files:
+            name = f.name.lower()
+            if 'bold' not in name:
+                continue
+            flat = re.sub(r'[^a-z]', '', name)
+            rank = next((i for i, fam in enumerate(FONT_FAMILIES)
+                         if fam in flat), None)
+            if rank is not None:
+                hits.append((rank, str(f)))
+    hits.sort()
+    return [p for _, p in hits]
+
+
 def ff_font_arg(path):
     """drawtext's fontfile= sits inside a filtergraph, where ':' separates
     options - hence the escaped drive-letter colon. Forward slashes and the
@@ -823,7 +866,11 @@ def resolve_font(explicit=None):
         tried.append(cand)
         if Path(cand).is_file():
             return ff_font_arg(cand), tried
-    return None, tried
+    # Named files all missed. Fall back to scanning the font directories,
+    # which is the guess that survives an unfamiliar machine.
+    for found in scan_font_dirs():
+        return ff_font_arg(found), tried + [f'(scan found {found})']
+    return None, tried + [f'(scanned {FONT_DIRS.get(platform.system(), [])})']
 
 
 # --------------------------------------------------------------- sheets ------
