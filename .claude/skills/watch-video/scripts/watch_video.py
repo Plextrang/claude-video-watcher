@@ -180,7 +180,11 @@ def step_download(d, url, no_download):
     if no_download:
         sys.exit('FATAL: --no-download given but no source file found.')
     log('[2/6] downloading 720p source')
-    run(ytdlp(['-f', 'bv*[height<=720]+ba/b[height<=720]',
+    # av01 first: some 720p renditions are AV1-only and decode slowly (or not
+    # at all) in older ffmpeg builds. Final bare 'b' so a video with no <=720p
+    # rendition degrades to whatever exists instead of erroring out.
+    run(ytdlp(['-f', 'bv*[height<=720][vcodec!*=av01]+ba/'
+               'bv*[height<=720]+ba/b[height<=720]/b',
                '-o', str(d / 'source.%(ext)s'), url]))
     src = find_source(d)
     if not src:
