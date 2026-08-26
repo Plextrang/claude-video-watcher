@@ -1,3 +1,11 @@
 # Python
 __pycache__/
 *.pyc
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Analysis output. Lives inside the repo so a clone is self-contained, but
+# is NEVER committed: one analysis is 8-35 MB of frames and contact sheets.
+# The repo ships the tool and INDEX.template.md; the research is yours.
+/video-research/
