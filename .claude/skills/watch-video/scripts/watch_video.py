@@ -9,6 +9,7 @@ so spaces in paths never touch a shell.
 """
 import argparse
 import csv
+import datetime
 import json
 import os
 import platform
@@ -53,6 +54,7 @@ YT_ID = re.compile(r'(?:v=|/shorts/|youtu\.be/|/embed/|/live/|/v/)'
 # rebound, so the module-level name ytdlp() closes over stays correct.
 COOKIES = []
 EXTRACTOR_ARGS = []
+PENDING = '_pending_'   # takeaway placeholder, filled in by Claude
 YTDLP_CMD = []     # resolved once by resolve_ytdlp(): module or binary
 JS_RUNTIME = []    # ['--js-runtimes', 'node'] when this yt-dlp supports it
 
@@ -341,7 +343,28 @@ def step_transcript(d, url, vid_hint=None):
         '\n'.join(f'[{mmss(s)}] {t}' for s, t in cues), encoding='utf-8')
 
     j = json.loads(info.read_text(encoding='utf-8'))
+    return finish_transcript(d, j, url, cues)
 
+
+def build_meta(j, cues):
+    meta = {k: j.get(k) for k in
+            ('id', 'title', 'channel', 'channel_follower_count', 'duration',
+             'view_count', 'like_count', 'comment_count', 'upload_date',
+             'webpage_url', 'description', 'thumbnail', 'tags', 'chapters',
+             'fps', 'width', 'height',
+             # channel_url feeds the baseline fetch in channel_baseline()
+             'channel_id', 'channel_url', 'uploader', 'uploader_url')}
+    meta['duration_mmss'] = mmss(j.get('duration') or 0)
+    # words/wpm were computed for one log line and thrown away; the index
+    # wants them, and recomputing means re-parsing the VTT.
+    words = sum(len(t.split()) for _, t in cues)
+    dur = j.get('duration') or 0
+    meta['words'] = words
+    meta['wpm'] = round(words / (dur / 60)) if dur else None
+    return meta
+
+
+def finish_transcript(d, j, url, cues):
     # slugify() keeps the first seven title words, so two different videos
     # with similar titles land in one folder and silently reuse each other's
     # frames, cuts and audio. The live corpus already has near-misses. Refuse
@@ -355,12 +378,7 @@ def step_transcript(d, url, vid_hint=None):
                  f'  requested : {want}\n'
                  f'Re-run with an explicit --slug for the new video.')
 
-    meta = {k: j.get(k) for k in
-            ('id', 'title', 'channel', 'channel_follower_count', 'duration',
-             'view_count', 'like_count', 'comment_count', 'upload_date',
-             'webpage_url', 'description', 'thumbnail', 'tags', 'chapters',
-             'fps', 'width', 'height')}
-    meta['duration_mmss'] = mmss(j.get('duration') or 0)
+    meta = build_meta(j, cues)
     (d / 'data' / 'meta.json').write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
 
@@ -369,9 +387,8 @@ def step_transcript(d, url, vid_hint=None):
     if not thumb.exists():
         fetch_thumbnail(j, meta, thumb)
 
-    words = sum(len(t.split()) for _, t in cues)
-    dur = meta.get('duration') or 1
-    log(f'   {len(cues)} cues, {words} words, {words / (dur / 60):.0f} wpm')
+    log(f'   {len(cues)} cues, {meta["words"]} words, '
+        f'{meta["wpm"] if meta["wpm"] is not None else "?"} wpm')
     return meta
 
 
@@ -979,6 +996,278 @@ def step_audio(d, src, rows, start, end):
     return True
 
 
+# ------------------------------------------------------- channel baseline ----
+BASELINE_N = 30
+BASELINE_MIN_ROWS = 8
+
+
+def channel_baseline(d, meta, skip=False):
+    """Median view count of the channel's recent uploads, excluding this one.
+
+    views/subs is not the number that reasons about performance. A video with
+    4.1K views on 710 subs reads as 5.8x by views/subs and 19.5x against its
+    own channel's baseline; those disagree by a factor of three and only the
+    second means anything.
+
+    Enrichment, never a reason to fail the run: returns None on any problem.
+    Deliberately does not use run(), which exits the process."""
+    cache = d / 'data' / 'channel_baseline.json'
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text(encoding='utf-8'))
+        except (ValueError, OSError):
+            pass
+    if skip:
+        return None
+    url = meta.get('channel_url') or meta.get('uploader_url')
+    if not url:
+        log('   ! no channel URL in the metadata - no channel multiplier')
+        return None
+    try:
+        # The /videos tab specifically: Shorts live under /shorts and are
+        # excluded from it, which removes the biggest source of median
+        # distortion without any duration filtering.
+        p = subprocess.run(
+            ytdlp(['--flat-playlist', '--playlist-end', str(BASELINE_N),
+                   '--print', '%(id)s|%(view_count)s',
+                   '--', url.rstrip('/') + '/videos']),
+            capture_output=True, text=True, errors='ignore', timeout=180)
+        rows = []
+        for line in (p.stdout or '').splitlines():
+            vid, _, views = line.strip().partition('|')
+            if vid == meta.get('id'):
+                continue
+            try:
+                rows.append(int(views))
+            except ValueError:
+                continue
+        if len(rows) < BASELINE_MIN_ROWS:
+            log(f'   ! channel baseline: only {len(rows)} usable uploads '
+                f'(need {BASELINE_MIN_ROWS}) - no channel multiplier')
+            return None
+        out = {'channel_median_views': int(st.median(rows)),
+               'sample_size': len(rows),
+               'fetched': datetime.date.today().isoformat()}
+        cache.write_text(json.dumps(out, indent=2), encoding='utf-8')
+        log(f'   channel baseline: median {out["channel_median_views"]:,} '
+            f'views over {out["sample_size"]} uploads')
+        return out
+    except Exception as e:
+        log(f'   ! channel baseline failed ({e}) - no channel multiplier')
+        return None
+
+
+# ---------------------------------------------------------------- index ------
+def load_index(root):
+    p = root / 'index.json'
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text(encoding='utf-8'))
+    except (ValueError, OSError):
+        log('   ! index.json is unreadable - starting a new one')
+        return []
+
+
+def build_record(slug, meta, pacing, audio, baseline, analyzed):
+    subs = meta.get('channel_follower_count') or 0
+    views = meta.get('view_count') or 0
+    med = (baseline or {}).get('channel_median_views')
+    lows = pacing.get('low_cut_sections') or []
+    return {
+        'id': meta.get('id'),
+        'slug': slug,
+        'title': meta.get('title'),
+        'channel': meta.get('channel'),
+        'channel_id': meta.get('channel_id'),
+        'subs': subs,
+        'views': views,
+        'duration_sec': meta.get('duration'),
+        'duration_mmss': meta.get('duration_mmss'),
+        'upload_date': meta.get('upload_date'),
+        'analyzed': analyzed,
+        'views_per_sub': round(views / subs, 2) if subs else None,
+        'channel_median_views': med,
+        'multiplier_vs_channel': round(views / med, 1) if med else None,
+        'merged_shots_per_min': pacing.get('merged_shots_per_min'),
+        'secondary_012_per_min': (pacing.get('secondary_012') or {})
+                                 .get('merged_shots_per_min'),
+        'in_band': pacing.get('in_band'),
+        'median_shot_sec': pacing.get('median_shot_sec'),
+        'longest_shot_sec': pacing.get('longest_shot_sec'),
+        'low_cut_count': len(lows),
+        'low_cut_total_sec': round(
+            sum(float(s.get('length_sec') or 0) for s in lows), 1),
+        'dead_zone_count': sum(1 for s in lows
+                               if s.get('verdict') == 'dead zone'),
+        'riser_count': len((audio or {}).get('risers') or []),
+        'beat_alignment_ratio': (audio or {}).get('beat_alignment_ratio'),
+        'beat_verdict': (audio or {}).get('beat_verdict'),
+        'words': meta.get('words'),
+        'wpm': meta.get('wpm'),
+        'total_frames': pacing.get('total_frames'),
+        'fill_frames': pacing.get('fill_frames'),
+        'takeaway': PENDING,
+    }
+
+
+def index_sort_key(r):
+    """Channel multiplier descending. Records without one sort last, ordered
+    by views/sub, because a missing baseline is not a low score."""
+    m = r.get('multiplier_vs_channel')
+    return (0 if m is not None else 1, -(m or 0.0),
+            -(r.get('views_per_sub') or 0.0))
+
+
+def upsert_index(root, record):
+    recs = load_index(root)
+    for i, r in enumerate(recs):
+        if r.get('id') and r.get('id') == record.get('id'):
+            # Never clobber a takeaway that has already been written, and
+            # keep the date the video was FIRST analysed - re-running the
+            # script is not a new analysis, and stamping today over it lost
+            # the real dates for the whole corpus the first time this ran.
+            record['takeaway'] = r.get('takeaway') or PENDING
+            record['analyzed'] = r.get('analyzed') or record['analyzed']
+            recs[i] = record
+            break
+    else:
+        recs.append(record)
+    write_index(root, recs)
+    return recs
+
+
+def _human(n):
+    if not n:
+        return '-'
+    for div, suf in ((1_000_000, 'M'), (1_000, 'K')):
+        if n >= div:
+            v = n / div
+            return f'{v:.0f}{suf}' if v >= 10 or v == int(v) else f'{v:.1f}{suf}'
+    return str(n)
+
+
+def _date(d8):
+    s = str(d8 or '')
+    return f'{s[:4]}-{s[4:6]}-{s[6:8]}' if len(s) == 8 else (s or '-')
+
+
+def _cell(s):
+    return str(s if s is not None else '-').replace('|', r'\|').replace('\n', ' ')
+
+
+MD_ROW = re.compile(r'^\|\s*\[.*?\]\(([^)/]+)/NOTES\.md\)\s*\|(.*)\|\s*$')
+
+
+def harvest_index_md(root):
+    """Recover the two fields a script cannot reproduce from an existing
+    INDEX.md before it is regenerated: the hand-written takeaway, and the
+    date the video was FIRST analysed. Takeaway is the last cell and analyzed
+    the one before it in both the old and the new column layouts."""
+    out = {}
+    p = root / 'INDEX.md'
+    if not p.exists():
+        return out
+    for line in p.read_text(encoding='utf-8', errors='ignore').splitlines():
+        m = MD_ROW.match(line.strip())
+        if not m:
+            continue
+        cells = [c.strip() for c in m.group(2).split('|')]
+        if len(cells) < 2:
+            continue
+        out[m.group(1)] = {
+            'takeaway': cells[-1] if cells[-1] not in ('', '-') else None,
+            'analyzed': cells[-2] if re.fullmatch(r'\d{4}-\d{2}-\d{2}',
+                                                  cells[-2] or '') else None,
+        }
+    return out
+
+
+def backfill_index(root):
+    """Fold analyses that predate index.json into it, so the corpus is not
+    silently reset to n=1 the first time this runs."""
+    known = {r.get('slug') for r in load_index(root)}
+    folders = [f for f in sorted(root.iterdir())
+               if f.is_dir() and (f / 'data' / 'meta.json').exists()
+               and f.name not in known]
+    if not folders:
+        return
+    prior = harvest_index_md(root)
+    recs = load_index(root)
+    for f in folders:
+        try:
+            meta = json.loads((f / 'data' / 'meta.json').read_text(encoding='utf-8'))
+            # Older meta.json predates words/wpm and the channel fields.
+            # The info.json is still on disk, so rebuild from it.
+            info = next(iter(f.glob('*.info.json')), None)
+            if info and meta.get('words') is None:
+                cues = []
+                tx = f / 'data' / 'transcript.txt'
+                if tx.exists():
+                    cues = [(0, l.split('] ', 1)[-1])
+                            for l in tx.read_text(encoding='utf-8').splitlines() if l]
+                meta = build_meta(json.loads(info.read_text(encoding='utf-8')), cues)
+                (f / 'data' / 'meta.json').write_text(
+                    json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
+            pacing = _read_json(f / 'data' / 'pacing.json') or {}
+            audio = _read_json(f / 'data' / 'audio_summary.json') or {}
+            base = _read_json(f / 'data' / 'channel_baseline.json')
+            was = prior.get(f.name) or {}
+            analyzed = was.get('analyzed') or datetime.date.fromtimestamp(
+                (f / 'data' / 'meta.json').stat().st_mtime).isoformat()
+            rec = build_record(f.name, meta, pacing, audio, base, analyzed)
+            rec['takeaway'] = was.get('takeaway') or PENDING
+            recs.append(rec)
+        except Exception as e:
+            log(f'   ! could not backfill {f.name}: {e}')
+    write_index(root, recs)
+    kept = sum(1 for f in folders if (prior.get(f.name) or {}).get('takeaway'))
+    log(f'backfilled {len(folders)} existing analyses into index.json '
+        f'({kept} takeaways preserved)')
+
+
+def _read_json(p):
+    try:
+        return json.loads(p.read_text(encoding='utf-8'))
+    except (ValueError, OSError):
+        return None
+
+
+def write_index(root, recs):
+    """index.json is the source of truth; INDEX.md is a generated view of it,
+    sorted by channel multiplier. The old rule was append-never-rewrite,
+    which existed to protect hand-written takeaways - now that the takeaway
+    lives in index.json, regenerating is safe and sorting is possible."""
+    (root / 'index.json').write_text(
+        json.dumps(recs, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    head = ['# Video Analysis Index', '',
+            'Generated from `index.json` after every run - do not hand-edit '
+            'this file, edit the',
+            '`takeaway` field in `index.json` instead. Sorted by channel '
+            'multiplier, descending.', '',
+            '**Mult (chan) is views / the channel\'s median recent views** - '
+            'how far a video beat its',
+            'own channel. **Views/Sub** is the cruder views / subscribers. '
+            'When they disagree, the',
+            'channel multiplier is the one that means something.', '',
+            '| Title | Channel | Subs | Views | Mult (chan) | Views/Sub | '
+            'Duration | Uploaded | Analyzed | Takeaway |',
+            '|---|---|---|---|---|---|---|---|---|---|']
+    for r in sorted(recs, key=index_sort_key):
+        mult = (f'**{r["multiplier_vs_channel"]}x**'
+                if r.get('multiplier_vs_channel') is not None else '-')
+        vps = (f'{r["views_per_sub"]}x'
+               if r.get('views_per_sub') is not None else '-')
+        head.append(
+            f'| [{_cell(r.get("title"))}]({r.get("slug")}/NOTES.md) '
+            f'| {_cell(r.get("channel"))} | {_human(r.get("subs"))} '
+            f'| {(r.get("views") or 0):,} | {mult} | {vps} '
+            f'| {_cell(r.get("duration_mmss"))} | {_date(r.get("upload_date"))} '
+            f'| {_cell(r.get("analyzed"))} | {_cell(r.get("takeaway"))} |')
+    (root / 'INDEX.md').write_text('\n'.join(head) + '\n', encoding='utf-8')
+
+
 # ----------------------------------------------------------------- main ------
 def gitignored(root):
     """Is this output root actually excluded from version control? Prefer
@@ -1070,6 +1359,8 @@ def main():
                          '(default: auto-detected per platform)')
     ap.add_argument('--check', action='store_true',
                     help='report whether every dependency is present, then exit')
+    ap.add_argument('--no-channel-baseline', action='store_true',
+                    help='skip the channel median fetch (faster, no multiplier)')
     a = ap.parse_args()
 
     # Before any network or disk work. Everything the pipeline shells out to,
@@ -1143,7 +1434,7 @@ def main():
     # into another project - the most likely thing a viewer does after the
     # video - silently relocates the output root somewhere arbitrary. Warn,
     # do not fail: an explicit --root is a legitimate reason to be here.
-    if not a.root and not (REPO_ROOT / 'INDEX.template.md').exists():
+    if not a.root and not (REPO_ROOT / '.claude' / 'skills' / 'watch-video').is_dir():
         log(f'WARNING: this does not look like the repo root: {REPO_ROOT}\n'
             f'         output will land in {root}\n'
             f'         if that is wrong, pass --root explicitly.')
@@ -1153,14 +1444,10 @@ def main():
     if created:
         log(f'created output root {root}')
 
-    # A fresh clone has no live index. Seed it from the repo's template.
-    index = root / 'INDEX.md'
-    tmpl = REPO_ROOT / 'INDEX.template.md'
-    if not index.exists() and tmpl.exists():
-        txt = re.sub(r'\nScaffold only\..*?\n\n', '\n',
-                     tmpl.read_text(encoding='utf-8'), flags=re.S)
-        index.write_text(txt, encoding='utf-8')
-        log(f'seeded {index} from INDEX.template.md')
+    # INDEX.md is now generated from index.json, so there is no template to
+    # seed - but analyses made before index.json existed still have to end up
+    # in the corpus, or the pattern pass would see one video.
+    backfill_index(root)
 
     slug = a.slug
     if not slug:
@@ -1214,6 +1501,14 @@ def main():
                       if not ok]
             log(f'   source KEPT - {" and ".join(failed)} did not fully '
                 f'succeed. Re-run to retry; the source will not re-download.')
+
+    baseline = channel_baseline(d, meta, skip=a.no_channel_baseline)
+    audio = _read_json(d / 'data' / 'audio_summary.json') or {}
+    rec = build_record(slug, meta, pacing, audio, baseline,
+                       datetime.date.today().isoformat())
+    upsert_index(root, rec)
+    log(f'   index: {root / "index.json"}  '
+        f'(takeaway is {rec["takeaway"]!r})')
 
     log('\n---- READY FOR ANALYSIS ----')
     log(f'sheets  : {d / "sheets"}')
