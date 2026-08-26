@@ -62,6 +62,12 @@ State these before trusting any number.
 - **It under-counts cuts in screen recordings.** See §4.
 - **Cut detection is blind to slow morphing graphics.** See §5.
 - **One video per session.** A full analysis is roughly 150–250K tokens of images.
+- **Metadata is a snapshot.** View and subscriber counts are captured at first analysis and cached.
+  Re-running does not refresh them, so every multiplier is frozen at the date in the index.
+- **The channel baseline is measured at analysis time, not publish time.** The comparison set is the
+  channel's most recent uploads *now*, not the videos that existed when the target was published.
+  For an old video on a channel that has since grown, the multiplier is understated. State this
+  rather than pretending the number is exact.
 
 ---
 
@@ -300,7 +306,60 @@ transferable**, because they exist to demo a product the competitor is being pai
 
 ---
 
-## 10. Operating notes
+## 10. Measure outperformance against the channel, not the subscriber count
+
+Views ÷ subscribers is the obvious ratio and it is the wrong one. It compares a video to an audience
+size, when the question is whether the video beat what that channel normally does.
+
+Use **views ÷ the channel's median recent view count** instead. Take the channel's recent uploads —
+30 is plenty — drop the video being analysed, and take the median. Use the channel's long-form tab
+specifically: Shorts routinely pull an order of magnitude more or fewer views than long-form and
+will wreck the median, and excluding them by tab is free where excluding them by duration is
+guesswork. Require a real sample — around 8 usable uploads — and return nothing below that rather
+than a median computed on noise. A missing baseline means "unknown", never "zero".
+
+**The two numbers disagree, and the disagreement is the point.** In the corpus this was built on, a
+video reading 0.84x by views/subs read 7.1x against its own channel and was the strongest piece in
+the set; another read 2.03x by views/subs and 0.5x against its channel. Ranked one way it is sixth,
+the other way it is first. Report both, and be explicit about which one you are sorting by.
+
+Treat this as enrichment. It needs a network call that can fail for reasons that have nothing to do
+with the analysis, so it must never be able to fail the run.
+
+---
+
+## 11. Cross-video synthesis
+
+A single analysis cannot answer the only question that matters across a library: **what do the
+videos that outperformed do that the ones that did not do not?**
+
+Split it the same way the rest of the method splits: a script assembles the corpus mechanically,
+and the model does the reasoning. Assemble one text file containing a numeric comparison table
+across every analysis plus a few **verbatim sections** from each write-up — hook map, reproduction
+cost, segment structure, composition mix, packaging. Not whole write-ups: a twelve-video corpus of
+those does not fit in a usable context, and the remaining sections are per-video reference rather
+than cross-video signal.
+
+**Set a minimum corpus size and enforce it in code.** Refuse to build under about six analyses, and
+stamp a provisional-findings warning under about twelve. A pattern pass over four videos is exactly
+how a tool that exists to avoid manufacturing confidence starts manufacturing it. The refusal has to
+be mechanical, because the temptation to run it early is strongest precisely when n is smallest.
+
+Two things make the synthesis worth reading. First, split the corpus into terciles by the channel
+multiplier and report top-third versus bottom-third for every dimension, including whether the gap
+is large enough to mean anything at that n. Second — and this is the section that earns it —
+require an explicit **contradictions** section listing what the corpus does *not* support, including
+where it contradicts beliefs already written down elsewhere. A synthesis that only confirms what was
+already believed has produced nothing.
+
+**Slice the write-ups by section number, not by title.** Real files drift: heading levels vary,
+titles get rewritten, capitalisation changes, sections go missing. Matching on the number and
+ignoring everything else is what makes the corpus builder survive contact with a year of notes
+written by hand.
+
+---
+
+## 12. Operating notes
 
 - **One video per session.** 150–250K tokens of images per analysis.
 - **Keep the frames and the notes, delete the source.** The video is disposable and re-downloadable;
@@ -308,8 +367,9 @@ transferable**, because they exist to demo a product the competitor is being pai
 - **Make it resumable.** These get re-run on the same videos. Skip any stage whose output exists, and
   do not re-download a source that nothing still needs.
 - **Keep an index** across videos: title, channel, subscribers, views, duration, date, and one line
-  of takeaway. Include **views ÷ subscribers**. That multiplier is what separates a video that
-  outperformed its channel from one that merely has a big channel behind it — sort attention by it.
+  of takeaway. Keep it as **structured data with a generated human view**, not as hand-written rows.
+  The takeaway is the only field a script cannot produce, so it is the only one worth protecting
+  across regenerations — everything else should be derived, which is what makes sorting possible.
 - **Smoke-test any pipeline change end to end before trusting it.** Two real bugs surfaced only on a
   full run: a filter argument that broke on a Windows drive-letter colon, and a shot count that came
   out higher than the raw detection count it derived from.

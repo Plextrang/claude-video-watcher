@@ -18,31 +18,45 @@ The only permitted `pip install` is a yt-dlp upgrade. Anything else, ask first.
 
 ## Run the pipeline
 
-From the project the analysis belongs to, so output lands in that project's `research\`:
-
 This skill is project-local. Run it from the repo root:
 
 ```
 py ".claude\skills\watch-video\scripts\watch_video.py" "<URL>"
 ```
 
-**Output never lands in the repo.** The default root is `..\video-research\`, a sibling of the repo,
-resolved from the script's own location so it is correct regardless of the working directory. The
-repo ships the tool; every analysis lives outside version control. The script refuses a `--root`
-that resolves inside the repo, and creates the sibling folder on first run.
+On macOS use `python3` instead of `py`. Windows and macOS are supported; Linux is untested.
 
-Produces `..\video-research\<slug>\` containing `frames\`, `sheets\`, `data\`, and later `NOTES.md`.
+Produces `video-research\<slug>\` inside the repo, containing `frames\`, `sheets\`, `data\`,
+and later `NOTES.md`. **That folder is in `.gitignore` and must stay there** — one analysis is
+8–35 MB. The script warns if the ignore is ever missing.
 
 Flags:
+- `--check` — report every dependency, then exit. Run this first if anything fails.
 - `--slug NAME` — folder name (default: derived from title)
-- `--root PATH` — output root (default: the `video-research` sibling; must be outside the repo)
-- `--start SEC` / `--end SEC` — analyse a segment only
+- `--root PATH` — output root (default: `video-research\` in the repo)
+- `--start T` / `--end T` — analyse a segment only. Accepts `SS`, `MM:SS` or `HH:MM:SS`.
 - `--hook-only` — first 60 seconds only
 - `--threshold N` — override scene threshold
 - `--no-download` — reuse an already-downloaded source
 - `--keep-source` — do not delete the source file when done
+- `--font PATH` — bold TTF for sheet labels (default: auto-detected per platform)
+- `--no-channel-baseline` — skip the channel median fetch (faster, no channel multiplier)
+- `--patterns` — build the cross-video corpus and exit. See the pattern pass below.
 
-Resumable. Existing frames, sheets and data are reused, so re-running is cheap.
+**When yt-dlp fails, read the message — it names the fix.** The two recoverable failures:
+- `--player-client tv,web_safari,mweb` — SABR streaming, when a download stalls or returns 0 bytes.
+  Try this first; it is cheaper and less fragile than cookies.
+- `--cookies-from-browser chrome` — the "sign in to confirm you're not a bot" challenge.
+  **Close Chrome first**; it locks the cookie database on Windows.
+- `--update` — upgrades yt-dlp. The only permitted install. Try it before anything else if
+  YouTube behaviour has changed.
+
+Resumable. Existing frames, sheets and data are reused, so re-running is cheap — a completed
+video re-runs in about two seconds with no network. A re-run finds its folder by **video id**,
+not by title, so a retitled video still lands in its original folder.
+
+The cache is invalidated automatically if `--start`, `--end` or `--threshold` differ from the run
+that produced it. It will say what changed and re-detect. That is correct, not a fault.
 
 The script deletes the source video once frames and audio both succeed. Frames, sheets,
 CSVs and NOTES.md are what gets kept; the source is disposable and re-downloadable.
@@ -151,6 +165,11 @@ Fixed structure, identical every video, so these compound into a comparable libr
 Write findings only. No preamble, no "this video demonstrates", no summary paragraph at the top.
 These are reference material, not essays.
 
+**Every section heading must be written exactly as `## N. Title`**, using the numbers below —
+`## 3b.` for reproduction cost, not `### 3b.`. The pattern pass slices sections out of these
+files by number, so a heading at the wrong level or with the number omitted drops that section
+out of the cross-video corpus.
+
 1. **Header.** Title, channel, duration, views, upload date, URL, date watched. Note sponsorship if present.
 
 2. **Hook map, 0:00–0:45.** Beat by beat. Each beat: timestamp, what is said verbatim from the
@@ -196,25 +215,75 @@ These are reference material, not essays.
 
 Sections 2, 3, 3b, 7, 9 and 10 are the ones Eddie actually uses. Weight the effort accordingly.
 
-## After every run — update the index
+## After every run — write the takeaway
 
-Append one row to the live index at `..\video-research\INDEX.md` — outside the repo. Never rewrite
-existing rows. The repo's `INDEX.template.md` is a headers-only scaffold; the script seeds the live
-index from it on first run. Do not append rows to the template.
+**The script writes the index row itself.** It upserts `video-research\index.json` and regenerates
+`video-research\INDEX.md` from it, sorted by channel multiplier. Do not hand-edit `INDEX.md` —
+it is overwritten on the next run.
 
-| Column | Source |
-|---|---|
-| Title, Channel, Subs, Views, Duration, Uploaded | `data\meta.json` |
-| Multiplier | views ÷ subs, one decimal, e.g. `4.4x` |
-| Analyzed | today's date |
-| Takeaway | one line, the single most transferable finding |
+Your only job is the one field a script cannot fill. After writing `NOTES.md`, open
+`video-research\index.json`, find this video's record, and replace `"takeaway": "_pending_"`
+with one line: the single most transferable finding. It survives every future re-run.
 
-The multiplier is the reason the index exists: it separates videos that outperformed their channel
-from videos that merely have a big channel behind them. Sort your attention by it.
+**Two multipliers, and they disagree.** `multiplier_vs_channel` is views ÷ the channel's median
+recent views — how far this video beat *its own channel*. `views_per_sub` is the cruder views ÷
+subscribers. When they disagree, the channel multiplier is the one that means something: in the
+current corpus one video reads 0.84x by views/sub and 7.1x against its channel, and it is the
+best-performing video in the set. Sort your attention by `multiplier_vs_channel`.
+
+A null `multiplier_vs_channel` means the channel baseline could not be fetched (fewer than 8
+usable uploads, or a fetch failure). It is not a low score — say "no baseline", never "0x".
+
+## The pattern pass — across videos, not within one
+
+Triggers: "find the patterns", "what do the winners do", "run the pattern pass", "compare the
+analyses", "what's working across these".
+
+1. Run `py ".claude\skills\watch-video\scripts\watch_video.py" --patterns`. It writes
+   `video-research\PATTERNS-INPUT.md` — the numeric comparison table plus sections 2, 3b, 6, 7
+   and 9 of every `NOTES.md`. No URL, no network, no images.
+2. Read it. Text only, one pass, no batching.
+3. Write `video-research\PATTERNS.md` to the schema below.
+4. **Never analyse a fresh video in the same session as a pattern pass.** The one-video-per-session
+   rule still holds for image-heavy work.
+
+The script refuses to build under 6 analyses, and stamps a corpus warning under 12. If the warning
+is there, carry it into `PATTERNS.md` and treat every finding as provisional. Do not argue with it.
+
+`PATTERNS.md` schema:
+
+1. **Corpus.** n, upload date range, multiplier range, how many lack a channel multiplier, and the
+   corpus warning verbatim if n < 12.
+2. **Top tercile vs bottom tercile.** Split by `multiplier_vs_channel`, excluding videos without
+   one. For each of: merged shots/min, median shot length, low-cut seconds as a percentage of
+   runtime, risers per 10 minutes, beat alignment ratio, words per minute, runtime, first-value
+   timestamp as a percentage of runtime (section 6), composition mix (section 7), animation count
+   and total credits (section 3b) — give the top-third figure, the bottom-third figure, and
+   whether the gap is large enough to mean anything at this n.
+3. **Hook patterns.** Top tercile only: what beats appear, in what order, how long the hook runs,
+   what is on screen during each. Name the beats present in most of the top and absent from most
+   of the bottom.
+4. **Packaging patterns.** From section 9: do title and thumbnail extend each other or repeat each
+   other, and does that split along the multiplier line.
+5. **Contradictions.** Anything the corpus does *not* support, explicitly including cases where the
+   data contradicts a belief already written in the AI Builders Club rules. Mandatory. "None found"
+   is acceptable only after actually looking.
+6. **What this means for the next AIBC video.** Concrete targets with numbers: shots per minute,
+   runtime, first-value timestamp, animation count and credit budget, hook beat order.
+7. **Confidence.** What n supports, what it does not, and which single dimension would benefit most
+   from more analyses.
+
+Section 5 is the one that earns the tool its keep. A synthesis that only confirms what is already
+believed has produced nothing.
 
 ## Rules
 
-- Windows paths, Windows commands, no bash-isms, no WSL assumptions.
+- Windows and macOS. On Windows use `py` and backslash paths; on macOS use `python3` and forward
+  slashes. No WSL assumptions. Linux may work but is untested.
 - If a step fails, show the actual error before proposing a fix. Do not guess at causes.
+  The script surfaces ffmpeg's and yt-dlp's real stderr — quote it rather than paraphrasing.
+- Run `--check` before diagnosing anything. It names the missing dependency and its install command.
 - Fix problems yourself where you can rather than handing them back.
-- If no captions exist at all, stop and say so. Whisper is not part of this pipeline.
+- If no captions exist at all, stop and say so. Whisper is not part of this pipeline, deliberately:
+  no API keys, no accounts, nothing to pay for.
+- Never hand-edit `INDEX.md` or `PATTERNS-INPUT.md`. Both are generated. Edit `index.json`.
