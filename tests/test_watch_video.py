@@ -566,6 +566,28 @@ class TestPatternsCorpusGuard(TempDirCase):
         self.assertIn('Incomplete analyses', text)
         self.assertIn('`video-0`', text)
 
+    def test_a_content_brief_is_excluded_but_not_called_incomplete(self):
+        """A BRIEF.md is a deliberate mode, not a half-finished analysis. It
+        has no hook map or reproduction cost to compare, so it is excluded -
+        but labelling it 'incomplete' would misreport the user's choice."""
+        root = self._corpus(wv.MIN_CORPUS + 1)
+        (root / 'video-0' / 'NOTES.md').unlink()
+        (root / 'video-0' / 'BRIEF.md').write_text('# brief', encoding='utf-8')
+        wv.build_patterns_input(root)
+        text = (root / 'PATTERNS-INPUT.md').read_text(encoding='utf-8')
+        self.assertIn('Content briefs, not creator breakdowns', text)
+        self.assertIn('`video-0`', text)
+        self.assertNotIn('Incomplete analyses', text)
+
+    def test_a_brief_does_not_count_toward_the_corpus_minimum(self):
+        """Six videos where one is a brief is five breakdowns - under the
+        floor, and it must still refuse."""
+        root = self._corpus(wv.MIN_CORPUS)
+        (root / 'video-0' / 'NOTES.md').unlink()
+        (root / 'video-0' / 'BRIEF.md').write_text('# brief', encoding='utf-8')
+        with self.assertRaises(SystemExit):
+            wv.build_patterns_input(root)
+
 
 if __name__ == '__main__':
     unittest.main()

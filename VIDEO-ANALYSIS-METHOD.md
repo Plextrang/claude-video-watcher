@@ -187,6 +187,26 @@ number of frames, say the number and let the human decide.
 
 ## 8. Output schema
 
+**Ask what the analysis is for before deciding what to write.** The extraction is intent-agnostic —
+frames, transcript, pacing and loudness are just evidence — but the write-up is not, and a fixed
+schema silently answers a question the reader may not have asked. Someone asking what a tutorial
+teaches does not want an animation inventory and a credit budget.
+
+Three consumers of the same evidence are worth supporting:
+
+- **Creator breakdown** — how the video was made. The ten-section schema below.
+- **Content brief** — what the video teaches, including every command, diagram, figure and label
+  read off the screen. The section that justifies the whole pipeline here is the on-screen
+  information log: **if the brief could have been written from the transcript alone, the frames
+  were wasted.** Watch specifically for things performed on screen but never spoken, and for
+  places where the narration and the screen disagree — that mismatch is often the most valuable
+  line in the document.
+- **A direct answer** — a specific question, answered in place with cited timestamps and no file.
+
+Do not infer which one from a bare URL. Ask.
+
+### The creator-breakdown schema
+
 Fixed structure, identical every video, so analyses compound into a comparable library. Findings
 only — no preamble, no "this video demonstrates", no summary paragraph at the top. Reference
 material, not essays.

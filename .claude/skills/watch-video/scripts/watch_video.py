@@ -1483,10 +1483,18 @@ def build_patterns_input(root):
     """Assemble the corpus into one text file, mechanically. Synthesis is a
     reasoning task and belongs to SKILL.md, not to this script."""
     recs = [r for r in load_index(root) if r.get('slug')]
-    complete, incomplete = [], []
+    complete, briefs, incomplete = [], [], []
     for r in recs:
-        (complete if (root / r['slug'] / 'NOTES.md').exists()
-         else incomplete).append(r)
+        folder = root / r['slug']
+        if (folder / 'NOTES.md').exists():
+            complete.append(r)
+        elif (folder / 'BRIEF.md').exists():
+            # A content brief is a deliberate choice, not a half-finished
+            # analysis. It has no hook map or reproduction cost to compare,
+            # so it is excluded - but saying "incomplete" would be wrong.
+            briefs.append(r)
+        else:
+            incomplete.append(r)
 
     n = len(complete)
     if n < MIN_CORPUS:
@@ -1554,16 +1562,26 @@ def build_patterns_input(root):
             out += [found.get(num, f'_(section {num} missing from NOTES.md)_'),
                     '']
 
+    if briefs:
+        out += ['---', '', '## Content briefs, not creator breakdowns', '',
+                'Analysed for what they teach rather than how they were made, '
+                'so they have no', 'hook map or reproduction cost to compare. '
+                'Excluded from the table above.', '']
+        out += [f'- `{r["slug"]}` - {r.get("title")}' for r in briefs] + ['']
+
     if incomplete:
         out += ['---', '', '## Incomplete analyses', '',
-                'In index.json but with no NOTES.md, so excluded above:', '']
-        out += [f'- `{r["slug"]}`' for r in incomplete] + ['']
+                'In index.json but with neither NOTES.md nor BRIEF.md - the '
+                'pipeline ran but', 'nothing was written up. Re-run the '
+                'analysis to bring these into the corpus:', '']
+        out += [f'- `{r["slug"]}` - {r.get("title")}' for r in incomplete] + ['']
 
     p = root / 'PATTERNS-INPUT.md'
     p.write_text('\n'.join(out) + '\n', encoding='utf-8')
     log(f'wrote {p}')
-    log(f'  {n} videos, {len(mults)} with a channel multiplier'
-        + (f', {len(incomplete)} incomplete' if incomplete else ''))
+    log(f'  {n} creator breakdowns, {len(mults)} with a channel multiplier'
+        + (f', {len(briefs)} content brief(s) excluded' if briefs else '')
+        + (f', {len(incomplete)} not written up' if incomplete else ''))
     if n < PROVISIONAL_CORPUS:
         log(f'  CORPUS WARNING: {n} videos - findings are provisional until '
             f'n >= {PROVISIONAL_CORPUS}')

@@ -1,6 +1,6 @@
 ---
 name: watch-video
-description: Analyze a YouTube video visually — extract one frame per shot plus dense uniform fill, build timestamped contact sheets, transcript, pacing and audio-energy data, then write a fixed-schema NOTES.md covering hook map, animation inventory, reproduction cost in credits, pacing, on-screen text, structure, composition mix, audio, packaging and a steal list. Trigger on ANY request to look at, study, break down or learn from a video, including bare phrasings — "analyze this video", "analyse this video", "analyze this video for my channel", "break down this video", "break down this video's hook", "watch this video", "study this video", "what's this video doing", "how is this hook built", "how did they edit this", "what animations does this use", "what can I steal from this", "how is this packaged", "review this competitor video" — or whenever a YouTube URL is pasted in any context about editing, animation, hooks, pacing, thumbnails or packaging. Also fires on "run the pipeline", "watch-video", or the script name. A bare YouTube URL with no instruction counts. NOT for transcript-only summaries or for answering what a video says — this exists because the useful information is visual.
+description: Watch a YouTube video properly — extract one frame per shot plus dense uniform fill, build timestamped contact sheets, a clean transcript, pacing and audio-energy data, then answer in one of three modes: a creator breakdown (fixed-schema NOTES.md covering hook map, animation inventory, reproduction cost in credits, pacing, on-screen text, structure, composition mix, audio, packaging and a steal list), a content brief (what the video actually teaches, including the diagrams, code, UI and on-screen text a transcript cannot see), or a direct answer to a specific question with cited timestamps. Trigger on ANY request to watch, look at, study, summarize, explain, break down or learn from a video, including bare phrasings — "analyze this video", "summarize this video", "what does this video teach", "explain this video", "break down this video", "break down this video's hook", "watch this video", "study this video", "what's this video doing", "how is this hook built", "how did they edit this", "what animations does this use", "what can I steal from this", "how is this packaged", "review this competitor video", "what happens at 4:20", "does this video cover X" — or whenever a YouTube URL is pasted in any context about video, editing, animation, hooks, pacing, thumbnails, packaging, tutorials or learning. Also fires on "run the pipeline", "watch-video", or the script name. A bare YouTube URL with no instruction counts. Use this INSTEAD of a transcript-only summary whenever the video has anything on screen worth seeing.
 ---
 
 # watch-video
@@ -15,6 +15,27 @@ In practice the fill frames carry more of the design work than the detected cuts
 
 Local only: yt-dlp, ffmpeg, Python stdlib. No MCP servers, no APIs, no paid services.
 The only permitted `pip install` is a yt-dlp upgrade. Anything else, ask first.
+
+## Step 0 — ask before you download. Always.
+
+**Before running anything, use AskUserQuestion.** Two questions, one call. Do this on every
+invocation, even when the request looks obvious — inferring silently is how someone asking
+"what does this video teach" ends up with an animation inventory and a credit budget.
+
+**Question 1 — what kind of analysis?**
+
+| Option | Produces | For |
+|---|---|---|
+| Creator breakdown | `NOTES.md`, the fixed 10-section schema | How the video was *made*: hooks, animation, pacing, packaging, what to steal |
+| Content brief | `BRIEF.md` | What the video *teaches*: the argument, the steps, the diagrams and code on screen |
+| Specific question | An answer in chat, no file | "What happens at 4:20", "does it cover X", "what tool is that" |
+
+**Question 2 — how deep?** Offer `standard` (default), `deep`, `max` — see the depth section.
+If they pick `max`, say in the same breath that it must be paired with `--hook-only` or a
+`--start/--end` window on anything long, and offer to scope it.
+
+If the user already named a scope ("the hook", "from 2:15 to 2:45"), pass it and say you did.
+Take their answers, run the pipeline once with the right flags, and do not ask again.
 
 ## Run the pipeline
 
@@ -184,13 +205,24 @@ Read `data\transcript.txt`, `data\meta.json`, `data\pacing.json`, `data\audio_su
 those images from context. Notes persist, frames do not need to. The API caps at 100 images per
 request, so accumulating across turns will eventually fail outright.
 
-**Survey pass.** Read all sheets in order. Build a rough timeline and flag every timestamp that
-looks like an animation, title card, graphic, chapter transition, or distinctive composition.
+**Survey pass.** Read all sheets in order and build a rough timeline. **What you flag depends on
+the mode chosen in Step 0:**
+
+- **Creator breakdown** — flag every animation, title card, graphic, chapter transition and
+  distinctive composition.
+- **Content brief** — flag every frame carrying *information*: diagrams, code, terminal output,
+  UI states, charts, settings panels, before/after comparisons, any slide with text on it.
+  Ignore pure b-roll and talking head unless something is written on screen.
+- **Specific question** — flag only what bears on the question, plus enough either side to place
+  it in context. You can stop the survey early once you have found it; say that you did.
 
 **Microscope pass.** Load flagged frames individually at full resolution from `frames\`. Read
-on-screen text, describe animation style, note colour and layout. Expect 30–60 frames. Always
-microscope the first 45 seconds densely regardless of what the survey flagged, because the hook
-decides everything.
+on-screen text, describe what is shown, note colour and layout. Expect 30–60 frames for a
+breakdown or a brief, and as few as 5–10 for a specific question.
+
+For a **creator breakdown**, always microscope the first 45 seconds densely regardless of what the
+survey flagged, because the hook decides everything. For a **content brief** that rule does not
+apply — the value is usually in the middle, so spend the frames where the teaching happens.
 
 Sheets are for structure, not for reading text. Cells downscale to ~520x290 — enough to see that a
 title card appeared, not enough to read it. Reading happens in the microscope pass.
@@ -204,7 +236,57 @@ after cut detection, and past 500 frames it warns that one session may not hold 
 line.** If it fires, give the user the number and offer to run `--hook-only` or a
 `--start`/`--end` window instead — do not just plough on and run out of context mid-survey.
 
-## Output schema — NOTES.md
+## Output — pick the one the user chose in Step 0
+
+Three modes. Write **one** of them. Do not write a creator breakdown for someone who asked what a
+video teaches, and do not write a whole file for someone who asked a one-line question.
+
+---
+
+## Mode B — content brief, `BRIEF.md`
+
+For "summarize this", "what does this teach", "explain this video", "walk me through this
+tutorial". Write to `video-research\<slug>\BRIEF.md`.
+
+**The reason this mode exists at all is the frames.** A transcript-only summary is free and
+already possible without this tool; it is also wrong about anything on screen. Your job is to
+produce the summary that could only be written by something that *watched* it — every diagram,
+code block, command, chart, price, setting and UI state included, with the timestamp.
+**If your brief could have been written from the transcript alone, you have wasted the pipeline.**
+
+1. **Header.** Title, channel, duration, upload date, URL, date watched. One line on what kind of
+   video it is (tutorial, essay, review, demo, interview).
+2. **What it claims or teaches.** The actual argument or lesson, in the video's own order. Three
+   to eight points. Quote the load-bearing sentences verbatim with timestamps.
+3. **On-screen information.** A table: timestamp, what is shown, and the content read verbatim
+   from the frame. Commands, code, diagram labels, chart figures, settings, file paths, prices.
+   **This is the section that justifies the tool.** If the video has none, say so explicitly —
+   that is itself a finding, and it means a transcript would have served just as well.
+4. **Steps, if it is a tutorial.** The actual reproducible procedure with timestamps. Include
+   anything performed on screen but never spoken aloud — that is the most common thing a
+   transcript loses.
+5. **Anything the narration and the screen disagree about.** Where what is said and what is shown
+   do not match, including versions, prices, or a demo that fails and is talked past. Often the
+   single most useful line in the whole brief. "None found" is a fine answer.
+6. **What it does not cover.** Gaps, assumed prerequisites, unanswered questions.
+7. **Worth going back to.** Three to six timestamps and why.
+
+---
+
+## Mode C — specific question
+
+The user asked something concrete. **Answer it in chat. Write no file** unless they ask for one.
+
+- Lead with the answer. Do not open with a summary of the video.
+- Cite timestamps for every claim, and say whether it came from the frames, the transcript, or both.
+- Quote on-screen text verbatim where it settles the question.
+- If the frames do not answer it, say so plainly and say what they do show. Do not fill the gap
+  from general knowledge — the whole point is that this answer is grounded in the actual video.
+- Offer the fuller mode at the end, one line: a brief or a breakdown if they want the rest.
+
+---
+
+## Mode A — creator breakdown, NOTES.md
 
 Fixed structure, identical every video, so these compound into a comparable library.
 Write findings only. No preamble, no "this video demonstrates", no summary paragraph at the top.
@@ -266,9 +348,16 @@ Sections 2, 3, 3b, 7, 9 and 10 are the ones that actually get used. Weight the e
 `video-research\INDEX.md` from it, sorted by channel multiplier. Do not hand-edit `INDEX.md` —
 it is overwritten on the next run.
 
-Your only job is the one field a script cannot fill. After writing `NOTES.md`, open
+Your only job is the one field a script cannot fill. After writing your output, open
 `video-research\index.json`, find this video's record, and replace `"takeaway": "_pending_"`
-with one line: the single most transferable finding. It survives every future re-run.
+with one line. It survives every future re-run.
+
+What that line should say depends on the mode:
+- **Creator breakdown** — the single most transferable finding about how it was made.
+- **Content brief** — the single most useful thing the video actually teaches.
+- **Specific question** — the answer, in one line, so the index records what was learned.
+
+Prefix a brief's takeaway with `[brief]` so a later reader knows it was not a creator analysis.
 
 **Two multipliers, and they disagree.** `multiplier_vs_channel` is views ÷ the channel's median
 recent views — how far this video beat *its own channel*. `views_per_sub` is the cruder views ÷
@@ -294,6 +383,11 @@ analyses", "what's working across these".
 
 The script refuses to build under 6 analyses, and stamps a corpus warning under 12. If the warning
 is there, carry it into `PATTERNS.md` and treat every finding as provisional. Do not argue with it.
+
+**Only creator breakdowns feed the pattern pass.** It slices sections out of `NOTES.md`, so a
+folder holding only a `BRIEF.md` is listed separately as a content brief and excluded - correctly,
+because a brief has no hook map or reproduction cost to compare. If the corpus is short, that is
+the first place to look for videos worth re-running as breakdowns.
 
 `PATTERNS.md` schema:
 
