@@ -526,8 +526,31 @@ def step_sheets(d, rows):
 
 
 # ---------------------------------------------------------------- audio ------
+def has_audio(src):
+    """ebur128 hard-fails on a video with no audio stream. Ask first."""
+    p = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a',
+                        '-show_entries', 'stream=index', '-of', 'csv=p=0',
+                        str(src)], capture_output=True, text=True, errors='ignore')
+    return bool(p.stdout.strip())
+
+
 def step_audio(d, src, rows, start, end):
     mfile = d / 'data' / 'loudness_m.txt'
+    summary_file = d / 'data' / 'audio_summary.json'
+
+    if not mfile.exists() and src and not has_audio(src):
+        # Section 8 is one section, not the deliverable. Complete the run.
+        log('[6/6] audio: no audio stream in the source - section 8 unavailable')
+        summary_file.write_text(json.dumps(
+            {'risers': [], 'beat_alignment_ratio': None,
+             'beat_verdict': 'no audio stream in the source',
+             'energy_runs': []}, indent=2), encoding='utf-8')
+        return True
+
+    if not mfile.exists() and not src:
+        log('[6/6] audio: no loudness data and no source to compute it from')
+        return False
+
     if not mfile.exists():
         cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
         if start:
@@ -539,9 +562,10 @@ def step_audio(d, src, rows, start, end):
         cmd += ['-i', str(src), '-af',
                 'ebur128=metadata=1,ametadata=print:key=lavfi.r128.M:file=loudness_m.txt',
                 '-f', 'null', '-']
-        subprocess.run(cmd, check=True, cwd=str(d / 'data'))
+        ff(cmd, 'audio loudness (ebur128)', cwd=str(d / 'data'))
     if not mfile.exists() or mfile.stat().st_size == 0:
-        log('[6/6] audio: ebur128 produced nothing, falling back to astats')
+        log('[6/6] audio: ebur128 produced no loudness data - '
+            'section 8 unavailable, source kept for a retry')
         return False
 
     off = start or 0.0
@@ -557,6 +581,8 @@ def step_audio(d, src, rows, start, end):
             samples.append((t, max(float(m.group(1)), -70.0)))
             t = None
     if not samples:
+        log('[6/6] audio: loudness file held no parseable r128 samples - '
+            'section 8 unavailable, source kept for a retry')
         return False
 
     per_sec = {}
@@ -748,7 +774,10 @@ def main():
             src.unlink()
             log(f'   source deleted ({size:.0f} MB) - frames and audio both succeeded')
         elif not a.keep_source:
-            log('   source KEPT - a step did not fully succeed')
+            failed = [n for n, ok in (('frames', frames_ok), ('audio', audio_ok))
+                      if not ok]
+            log(f'   source KEPT - {" and ".join(failed)} did not fully '
+                f'succeed. Re-run to retry; the source will not re-download.')
 
     log('\n---- READY FOR ANALYSIS ----')
     log(f'sheets  : {d / "sheets"}')
