@@ -192,7 +192,8 @@ Read these before trusting a number.
 py -m unittest discover -s tests
 ```
 
-41 tests, no network, about a second. Standard library only — same rule as the pipeline itself.
+No network, runs in about a second. Standard library only - same rule as the pipeline itself.
+Every test corresponds to a bug that was actually shipped, so a failure names a real regression.
 
 ## Documentation
 

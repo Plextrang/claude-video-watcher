@@ -59,7 +59,7 @@ PER = COLS * ROWS
 # Resolved per platform in main() before anything downloads. Contact sheets
 # are the whole point of the tool and drawtext needs a real font file, so a
 # missing font must fail at startup rather than after a 300 MB download.
-FONT = None
+FONT = None            # real filesystem path; ff_font_arg() escapes it for ffmpeg
 TAG = re.compile(r'<[^>]*>')
 CUE_TIMING = re.compile(r'<\d{2}:\d{2}:\d{2}\.\d{3}>')   # auto-subs only
 PTS = re.compile(r'pts_time:([0-9.]+)')
@@ -935,24 +935,27 @@ def ff_font_arg(path):
 
 
 def resolve_font(explicit=None):
-    """Returns (ffmpeg-ready path, list of paths tried). None if none exist.
+    """Returns (real filesystem path, list of paths tried). None if none exist.
+
+    Deliberately NOT pre-escaped: --check prints this, and showing a user
+    an ffmpeg-escaped drive letter is confusing. step_sheets escapes it.
 
     An explicit --font that does not exist is an error, never a reason to
     fall back to a platform default: silently ignoring the flag would hide
     a typo behind a sheet that renders in the wrong typeface."""
     if explicit:
         if Path(explicit).is_file():
-            return ff_font_arg(explicit), [explicit]
+            return explicit, [explicit]
         return None, [explicit]
     tried = []
     for cand in font_candidates():
         tried.append(cand)
         if Path(cand).is_file():
-            return ff_font_arg(cand), tried
+            return cand, tried
     # Named files all missed. Fall back to scanning the font directories,
     # which is the guess that survives an unfamiliar machine.
     for found in scan_font_dirs():
-        return ff_font_arg(found), tried + [f'(scan found {found})']
+        return found, tried + [f'(scan found {found})']
     return None, tried + [f'(scanned {FONT_DIRS.get(platform.system(), [])})']
 
 
@@ -994,7 +997,8 @@ def step_sheets(d, rows):
                 parts.append(
                     f'[{i}:v]scale={CW}:{CH}:force_original_aspect_ratio=decrease,'
                     f'pad={CW}:{CH}:(ow-iw)/2:(oh-ih)/2:color=#101010,'
-                    f"drawtext=fontfile='{FONT}':text='{esc(tag)}':fontcolor=white:"
+                    f"drawtext=fontfile='{ff_font_arg(FONT)}':"
+                    f"text='{esc(tag)}':fontcolor=white:"
                     f'fontsize=21:box=1:boxcolor=black@0.65:boxborderw=5:x=7:y=7[v{i}]')
             else:
                 parts.append(f'[{i}:v]scale={CW}:{CH}[v{i}]')
