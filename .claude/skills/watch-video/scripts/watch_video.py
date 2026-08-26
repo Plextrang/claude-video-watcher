@@ -1268,6 +1268,141 @@ def write_index(root, recs):
     (root / 'INDEX.md').write_text('\n'.join(head) + '\n', encoding='utf-8')
 
 
+# --------------------------------------------------------------- patterns ----
+# Hook map, reproduction cost, segment structure, composition mix, packaging.
+# The five that carry transferable design decisions. Deliberately NOT the
+# whole NOTES.md: a twelve-video corpus of full notes does not fit in a
+# usable context, and the other five sections are per-video reference rather
+# than cross-video signal.
+PATTERN_SECTIONS = ['2', '3b', '6', '7', '9']
+MIN_CORPUS = 6
+PROVISIONAL_CORPUS = 12
+SECTION_RE = re.compile(r'^#{2,4}\s*(\d+b?)\.\s', re.I)
+
+
+def slice_notes(text, wanted):
+    """Return {section_number: verbatim text} for the wanted sections.
+
+    Real NOTES.md files vary more than the schema implies: '### 3b.' appears
+    alongside '## 3b.', titles differ in case, and some files have no
+    section 1 at all. So match on the NUMBER and ignore the title. A section
+    runs until the next numbered heading; unnumbered '###' sub-headings stay
+    inside it, which is what we want."""
+    lines = text.splitlines()
+    marks = [(i, m.group(1).lower())
+             for i, line in enumerate(lines)
+             if (m := SECTION_RE.match(line))]
+    out = {}
+    for idx, (start, num) in enumerate(marks):
+        end = marks[idx + 1][0] if idx + 1 < len(marks) else len(lines)
+        if num in wanted and num not in out:
+            out[num] = '\n'.join(lines[start:end]).strip()
+    return out
+
+
+PATTERN_COLS = [
+    ('slug', 'slug'), ('multiplier_vs_channel', 'mult'),
+    ('views_per_sub', 'v/sub'), ('views', 'views'), ('subs', 'subs'),
+    ('duration_sec', 'dur_s'), ('merged_shots_per_min', 'shots/min'),
+    ('secondary_012_per_min', '0.12/min'), ('median_shot_sec', 'med_shot'),
+    ('longest_shot_sec', 'longest'), ('low_cut_count', 'lowcut_n'),
+    ('low_cut_total_sec', 'lowcut_s'), ('dead_zone_count', 'dead'),
+    ('riser_count', 'risers'), ('beat_alignment_ratio', 'beat'),
+    ('wpm', 'wpm'), ('words', 'words'), ('total_frames', 'frames'),
+    ('fill_frames', 'fill'),
+]
+
+
+def build_patterns_input(root):
+    """Assemble the corpus into one text file, mechanically. Synthesis is a
+    reasoning task and belongs to SKILL.md, not to this script."""
+    recs = [r for r in load_index(root) if r.get('slug')]
+    complete, incomplete = [], []
+    for r in recs:
+        (complete if (root / r['slug'] / 'NOTES.md').exists()
+         else incomplete).append(r)
+
+    n = len(complete)
+    if n < MIN_CORPUS:
+        sys.exit(f'FATAL: PATTERNS needs at least {MIN_CORPUS} analysed '
+                 f'videos. Found {n}.\n'
+                 f'Patterns from fewer than {MIN_CORPUS} are noise dressed '
+                 f'as findings.')
+
+    complete.sort(key=index_sort_key)
+    out = ['# Patterns input', '',
+           f'Corpus of {n} analysed videos, assembled from index.json and '
+           f'each NOTES.md.', '']
+
+    if n < PROVISIONAL_CORPUS:
+        out += [f'> CORPUS WARNING: {n} videos. Treat every finding as '
+                f'provisional.',
+                f'> Nothing here is a rule until n >= {PROVISIONAL_CORPUS}.',
+                '']
+
+    uploads = sorted(_date(r.get('upload_date')) for r in complete
+                     if r.get('upload_date'))
+    analyses = sorted(r.get('analyzed') for r in complete if r.get('analyzed'))
+    mults = [r['multiplier_vs_channel'] for r in complete
+             if r.get('multiplier_vs_channel') is not None]
+    no_mult = [r['slug'] for r in complete
+               if r.get('multiplier_vs_channel') is None]
+    out += ['## Corpus', '',
+            f'- videos: {n}',
+            f'- uploaded: {uploads[0]} to {uploads[-1]}' if uploads else
+            '- uploaded: unknown',
+            f'- analysed: {analyses[0]} to {analyses[-1]}' if analyses else
+            '- analysed: unknown',
+            (f'- channel multiplier: {min(mults)}x to {max(mults)}x '
+             f'across {len(mults)} videos' if mults else
+             '- channel multiplier: none available')]
+    if no_mult:
+        out += [f'- NO channel multiplier ({len(no_mult)}), excluded from any '
+                f'tercile split: ' + ', '.join(no_mult)]
+    out += ['']
+
+    out += ['## Comparison table', '',
+            'Sorted by channel multiplier, descending. Videos without one '
+            'sort last.', '',
+            '| ' + ' | '.join(h for _, h in PATTERN_COLS) + ' |',
+            '|' + '---|' * len(PATTERN_COLS)]
+    for r in complete:
+        out.append('| ' + ' | '.join(
+            _cell(r.get(k)) for k, _ in PATTERN_COLS) + ' |')
+    out += ['']
+
+    out += ['## Per-video extracts', '',
+            'Sections ' + ', '.join(PATTERN_SECTIONS) + ' only, verbatim.', '']
+    for r in complete:
+        mult = (f'{r["multiplier_vs_channel"]}x'
+                if r.get('multiplier_vs_channel') is not None else 'no mult')
+        out += ['---', '',
+                f'### {r.get("title")}',
+                f'`{r["slug"]}` - {r.get("channel")} - {mult} - '
+                f'{r.get("views"):,} views - {r.get("duration_mmss")}', '',
+                f'**Takeaway:** {r.get("takeaway")}', '']
+        found = slice_notes(
+            (root / r['slug'] / 'NOTES.md').read_text(
+                encoding='utf-8', errors='ignore'), PATTERN_SECTIONS)
+        for num in PATTERN_SECTIONS:
+            out += [found.get(num, f'_(section {num} missing from NOTES.md)_'),
+                    '']
+
+    if incomplete:
+        out += ['---', '', '## Incomplete analyses', '',
+                'In index.json but with no NOTES.md, so excluded above:', '']
+        out += [f'- `{r["slug"]}`' for r in incomplete] + ['']
+
+    p = root / 'PATTERNS-INPUT.md'
+    p.write_text('\n'.join(out) + '\n', encoding='utf-8')
+    log(f'wrote {p}')
+    log(f'  {n} videos, {len(mults)} with a channel multiplier'
+        + (f', {len(incomplete)} incomplete' if incomplete else ''))
+    if n < PROVISIONAL_CORPUS:
+        log(f'  CORPUS WARNING: {n} videos - findings are provisional until '
+            f'n >= {PROVISIONAL_CORPUS}')
+
+
 # ----------------------------------------------------------------- main ------
 def gitignored(root):
     """Is this output root actually excluded from version control? Prefer
@@ -1361,7 +1496,20 @@ def main():
                     help='report whether every dependency is present, then exit')
     ap.add_argument('--no-channel-baseline', action='store_true',
                     help='skip the channel median fetch (faster, no multiplier)')
+    ap.add_argument('--patterns', action='store_true',
+                    help='build PATTERNS-INPUT.md across every analysis, '
+                         'then exit. No URL, no network.')
     a = ap.parse_args()
+
+    # Standalone, offline, and needs neither ffmpeg nor a font - so it runs
+    # before the dependency gate rather than being blocked by it.
+    if a.patterns:
+        root = (Path(a.root).resolve() if a.root else DEFAULT_ROOT)
+        if not root.exists():
+            sys.exit(f'FATAL: no analyses at {root}.')
+        backfill_index(root)
+        build_patterns_input(root)
+        return
 
     # Before any network or disk work. Everything the pipeline shells out to,
     # plus the font, checked while a fix is still cheap.
