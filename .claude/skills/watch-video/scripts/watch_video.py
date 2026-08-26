@@ -33,6 +33,16 @@ FONT = r"C\:/Windows/Fonts/arialbd.ttf"
 TAG = re.compile(r'<[^>]*>')
 PTS = re.compile(r'pts_time:([0-9.]+)')
 
+# Populated once in main(), then read by ytdlp(). Mutated in place, never
+# rebound, so the module-level name ytdlp() closes over stays correct.
+COOKIES = []
+EXTRACTOR_ARGS = []
+
+# The two yt-dlp failures that are recoverable but not guessable.
+BOT_HINTS = ('confirm you', 'not a bot', 'sign in to confirm')
+SABR_HINTS = ('sabr', 'requested format is not available',
+              'fragment', 'missing a url')
+
 # The repo ships the tool only. Every analysis lands in a sibling folder outside
 # it, so no analysis output can ever end up inside version control.
 #   .../<parent>/<repo>/.claude/skills/watch-video/scripts/watch_video.py
@@ -52,11 +62,30 @@ def run(cmd, **kw):
     except subprocess.CalledProcessError as e:
         # Show the tool's real error, not a Python traceback.
         tail = [l for l in (e.stderr or e.stdout or '').strip().split('\n') if l.strip()]
-        sys.exit('FATAL: yt-dlp failed.\n' + '\n'.join(tail[-6:] or ['(no output)']))
+        sys.exit('FATAL: yt-dlp failed.\n'
+                 + '\n'.join(tail[-6:] or ['(no output)'])
+                 + remediation(tail))
+
+
+def remediation(tail):
+    """Turn yt-dlp's two recoverable failures into instructions. Neither is
+    guessable under pressure, and both are unrecoverable mid-record."""
+    blob = '\n'.join(tail).lower()
+    if any(h in blob for h in SABR_HINTS):
+        return ('\n\nThis looks like YouTube SABR streaming. Retry with:\n'
+                '  --player-client tv,web_safari,mweb\n'
+                'If that still fails, run --update first: yt-dlp ships SABR '
+                'fixes faster than anything else.')
+    if any(h in blob for h in BOT_HINTS):
+        return ('\n\nYouTube threw its bot check. Retry with:\n'
+                '  --cookies-from-browser chrome\n'
+                'Close Chrome first: it locks the cookie database on Windows.')
+    return ''
 
 
 def ytdlp(args):
-    return [sys.executable, '-m', 'yt_dlp', '--js-runtimes', 'node'] + args
+    return ([sys.executable, '-m', 'yt_dlp', '--js-runtimes', 'node']
+            + COOKIES + EXTRACTOR_ARGS + args)
 
 
 def log(msg):
@@ -106,7 +135,7 @@ def step_transcript(d, url, vid_hint=None):
         log('[1/6] transcript + metadata')
         run(ytdlp(['--skip-download', '--write-auto-subs', '--write-subs',
                    '--sub-langs', 'en.*', '--sub-format', 'vtt',
-                   '--write-info-json', '-o', str(d / '%(id)s'), url]))
+                   '--write-info-json', '-o', str(d / '%(id)s'), '--', url]))
         subs = sorted(d.glob('*.en*.vtt'))
         info = next(iter(d.glob('*.info.json')), None)
     else:
@@ -185,7 +214,7 @@ def step_download(d, url, no_download):
     # rendition degrades to whatever exists instead of erroring out.
     run(ytdlp(['-f', 'bv*[height<=720][vcodec!*=av01]+ba/'
                'bv*[height<=720]+ba/b[height<=720]/b',
-               '-o', str(d / 'source.%(ext)s'), url]))
+               '-o', str(d / 'source.%(ext)s'), '--', url]))
     src = find_source(d)
     if not src:
         sys.exit('FATAL: download produced no source file.')
@@ -610,7 +639,31 @@ def main():
     ap.add_argument('--threshold', type=float, help='override scene threshold')
     ap.add_argument('--no-download', action='store_true', help='reuse existing source')
     ap.add_argument('--keep-source', action='store_true', help='do not delete source when done')
+    ap.add_argument('--cookies-from-browser', metavar='BROWSER',
+                    help='pass cookies from a local browser to yt-dlp '
+                         '(chrome, edge, firefox). Use when YouTube throws '
+                         'the bot check. Close the browser first.')
+    ap.add_argument('--player-client', metavar='LIST',
+                    help='yt-dlp youtube:player_client override, e.g. '
+                         'tv,web_safari,mweb. Use when downloads stall or '
+                         'return 0 bytes (SABR streaming).')
+    ap.add_argument('--update', action='store_true',
+                    help='upgrade yt-dlp before running (the only permitted install)')
     a = ap.parse_args()
+
+    # Mutate in place: ytdlp() reads these module-level lists on every call.
+    if a.cookies_from_browser:
+        COOKIES[:] = ['--cookies-from-browser', a.cookies_from_browser]
+    if a.player_client:
+        EXTRACTOR_ARGS[:] = ['--extractor-args',
+                             f'youtube:player_client={a.player_client}']
+
+    if a.update:
+        log('upgrading yt-dlp')
+        # check=False deliberately: a failed upgrade must not stop a run that
+        # would otherwise work (offline, no pip, locked site-packages).
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '-U', 'yt-dlp'],
+                       check=False)
 
     start, end = a.start, a.end
     if a.hook_only:
@@ -645,7 +698,8 @@ def main():
     if not slug:
         if not a.url:
             sys.exit('FATAL: need --slug when no URL is given.')
-        t = run(ytdlp(['--skip-download', '--print', '%(title)s', a.url])).stdout.strip()
+        t = run(ytdlp(['--skip-download', '--print', '%(title)s',
+                       '--', a.url])).stdout.strip()
         slug = slugify(t.split('\n')[-1])
     d = root / slug
     for sub in ('frames', 'sheets', 'data'):
