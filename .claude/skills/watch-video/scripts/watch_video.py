@@ -261,6 +261,53 @@ def parse_vtt(path):
     return out
 
 
+def pick_thumbnail_url(j):
+    """meta['thumbnail'] is whatever yt-dlp ranked highest, which for plenty
+    of videos is a .webp - saved unconditionally as thumbnail.jpg, the file
+    section 9 of the schema has to open. Prefer a real JPEG, widest first."""
+    best = None
+    for t in (j.get('thumbnails') or []):
+        u = (t.get('url') or '')
+        if '.jpg' in u.lower() or '.jpeg' in u.lower():
+            key = (t.get('width') or 0, t.get('preference') or 0)
+            if best is None or key > best[0]:
+                best = (key, u)
+    return best[1] if best else j.get('thumbnail')
+
+
+def fetch_thumbnail(j, meta, thumb):
+    url = pick_thumbnail_url(j)
+    if not url:
+        log('   ! no thumbnail URL in the metadata - section 9 has no image')
+        return
+    tmp = thumb.with_suffix('.download')
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url, headers={'User-Agent': 'Mozilla/5.0 (watch-video)'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            tmp.write_bytes(r.read())
+    except Exception as e:
+        log(f'   ! thumbnail download failed: {e}')
+        tmp.unlink(missing_ok=True)
+        return
+    # Trust the bytes, not the extension. A .webp renamed .jpg may simply
+    # not open. Normalising costs one cheap ffmpeg call and is a no-op when
+    # the file is already a JPEG.
+    if tmp.read_bytes()[:3] == b'\xff\xd8\xff':
+        tmp.replace(thumb)
+        return
+    p = subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                        '-y', '-i', str(tmp), str(thumb)],
+                       capture_output=True, text=True, errors='ignore')
+    tmp.unlink(missing_ok=True)
+    if p.returncode != 0 or not thumb.exists():
+        log(f'   ! thumbnail was not a JPEG and would not convert: '
+            f'{(p.stderr or "").strip()[:120]}')
+    else:
+        log('   thumbnail converted to JPEG')
+
+
 def step_transcript(d, url, vid_hint=None):
     subs = sorted(d.glob('*.en*.vtt'))
     info = next(iter(d.glob('*.info.json')), None)
@@ -316,12 +363,8 @@ def step_transcript(d, url, vid_hint=None):
 
     # Thumbnail is required by the packaging section of the schema
     thumb = d / 'data' / 'thumbnail.jpg'
-    if meta.get('thumbnail') and not thumb.exists():
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(meta['thumbnail'], thumb)
-        except Exception as e:
-            log(f'   ! thumbnail download failed: {e}')
+    if not thumb.exists():
+        fetch_thumbnail(j, meta, thumb)
 
     words = sum(len(t.split()) for _, t in cues)
     dur = meta.get('duration') or 1
@@ -1047,6 +1090,16 @@ def main():
         sys.exit(f'FATAL: --root {root} is inside the repo ({REPO_ROOT}).\n'
                  f'Analysis output belongs outside version control. '
                  f'Default is {DEFAULT_ROOT}.')
+    # REPO_ROOT is parents[4], which assumes the skill still sits at
+    # <repo>/.claude/skills/watch-video/scripts/. Copying the skill folder
+    # into another project - the most likely thing a viewer does after the
+    # video - silently relocates the output root somewhere arbitrary. Warn,
+    # do not fail: an explicit --root is a legitimate reason to be here.
+    if not a.root and not (REPO_ROOT / 'INDEX.template.md').exists():
+        log(f'WARNING: this does not look like the repo root: {REPO_ROOT}\n'
+            f'         output will land in {root}\n'
+            f'         if that is wrong, pass --root explicitly.')
+
     created = not root.exists()
     root.mkdir(parents=True, exist_ok=True)
     if created:
