@@ -153,8 +153,13 @@ Read these before trusting a number.
 - **The channel baseline is measured at analysis time, not publish time.** For an old video on a
   channel that has since grown, `multiplier_vs_channel` is understated. It needs 8 usable uploads;
   below that it is `null`, which means "no baseline", not "0x".
-- **One video per session.** A full analysis is roughly 150–250K tokens of images. Run each video in
-  its own fresh session, and never in the same session as a pattern pass.
+- **One video per session, and roughly 40 minutes is the ceiling.** Measured on the longest run to
+  date: a **36:07 video produced 469 frames and 53 contact sheets — about 228K image tokens**
+  (173K for the survey pass, 55K for 45 microscope frames). That fits, but it is the top of the
+  band, and it took about 12 minutes of wall clock and a 170 MB download. Past ~500 frames the
+  script prints the projected cost and tells you to use `--hook-only` or `--start`/`--end` instead.
+  It never reduces the frame count silently — it states the number and lets you decide.
+  Run each video in its own fresh session, and never in the same session as a pattern pass.
 
 ## Tests
 

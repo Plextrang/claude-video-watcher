@@ -61,7 +61,13 @@ State these before trusting any number.
   movement are invisible except where consecutive frames imply them.
 - **It under-counts cuts in screen recordings.** See §4.
 - **Cut detection is blind to slow morphing graphics.** See §5.
-- **One video per session.** A full analysis is roughly 150–250K tokens of images.
+- **One video per session, and there is a runtime ceiling.** A full analysis is roughly 150–250K
+  tokens of images, and that scales with *shot count*, not with duration. Measured: a 36-minute
+  video at 11 shots/min produced 469 frames and 53 contact sheets — about 228K image tokens, which
+  fits but leaves nothing spare. Around 40 minutes is the practical limit for a single pass.
+  Project the cost from the shot count *before* extracting, print it, and above the ceiling tell the
+  operator to analyse in segments. Never sample down silently to make a long video fit: state the
+  number and let the human decide, which is the same rule as everywhere else here.
 - **Metadata is a snapshot.** View and subscriber counts are captured at first analysis and cached.
   Re-running does not refresh them, so every multiplier is frozen at the date in the index.
 - **The channel baseline is measured at analysis time, not publish time.** The comparison set is the

@@ -704,6 +704,43 @@ def step_cuts(d, src, meta, threshold_override, start, end):
     return pacing, rows
 
 
+# Measured, not guessed: a 3x3 sheet at 1568px costs ~3,275 image tokens and
+# a full-resolution 720p frame ~1,229. The survey pass reads every sheet; the
+# microscope pass reads 30-60 individual frames on top.
+TOK_SHEET = 3275
+TOK_FRAME = 1229
+MICROSCOPE = 45
+# Measured, not assumed. The largest run to date: a 36:07 video produced 469
+# frames and 53 sheets, costing ~173K image tokens for the survey pass plus
+# ~55K for 45 microscope frames - about 228K, which fits but sits at the very
+# top of the documented 150-250K band. 500 is just above the proven point;
+# past it we are extrapolating, and the warning says so.
+FRAME_CEILING = 500
+
+
+def project_cost(n_frames):
+    """State the number and let the human decide - never silently sample down.
+
+    Deliberately does NOT prompt. This script is normally run by Claude
+    through a shell, where blocking on stdin hangs the session with no way to
+    answer. A loud warning that names the alternative is the useful form."""
+    sheets = (n_frames + PER - 1) // PER
+    tokens = sheets * TOK_SHEET + MICROSCOPE * TOK_FRAME
+    log(f'   projected read cost: {n_frames} frames -> {sheets} sheets '
+        f'~= {tokens // 1000}K image tokens for the survey pass, plus '
+        f'~{MICROSCOPE} microscope frames')
+    if n_frames > FRAME_CEILING:
+        log(f'   !! {n_frames} frames is past the largest tested run '
+            f'(469 frames / 36:07 / ~228K image tokens). One session may '
+            f'not hold this.\n'
+            f'   !! Analyse it in parts instead:\n'
+            f'   !!   --hook-only              the first 60s\n'
+            f'   !!   --start 0 --end 15:00    a fifteen-minute window\n'
+            f'   !! Nothing has been reduced. Every frame is on disk if you '
+            f'continue anyway.')
+    return sheets, tokens
+
+
 def classify_low_cut(d, pacing, rows):
     """A low-cut section is only a true dead zone if its fill frames come back
     visually near-identical. Otherwise it is dense animation the detector
@@ -1712,6 +1749,7 @@ def main():
     win_start, win_end, _ = resolve_window(meta, start, end, src)
 
     pacing, rows = step_cuts(d, src, meta, a.threshold, win_start, win_end)
+    project_cost(len(rows))
     frames_ok = step_frames(d, src, rows)
     classify_low_cut(d, pacing, rows)
     step_sheets(d, rows)

@@ -159,6 +159,12 @@ title card appeared, not enough to read it. Reading happens in the microscope pa
 Never silently reduce frame counts to save tokens. If a video would produce an unreasonable number
 of frames, say the number and let Eddie decide.
 
+**Runtime ceiling — measured, around 40 minutes.** A 36:07 video came to 469 frames and 53 sheets,
+about 228K image tokens: it fits, with nothing spare. The script prints the projected cost right
+after cut detection, and past 500 frames it warns that one session may not hold it. **Read that
+line.** If it fires, tell Eddie the number and offer to run `--hook-only` or a
+`--start`/`--end` window instead — do not just plough on and run out of context mid-survey.
+
 ## Output schema — NOTES.md
 
 Fixed structure, identical every video, so these compound into a comparable library.
